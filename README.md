@@ -9,6 +9,13 @@
   </picture>
 </p>
 
+> [!TIP]
+> **This repository holds source code, not a runnable program.**
+> Looking for a ready-to-use build? Download `Akagi-v3增强版.zip` from the
+> [Releases page](../../releases). Building from source on Windows? Read
+> [BUILD.zh-CN.md](./BUILD.zh-CN.md) — it documents the exact toolchain and
+> the three pitfalls that break a plain `cargo build` on Windows.
+
 <p align="center">
   <i>「死ねば助かるのに………」 - 赤木しげる</i>
   <br/><br/>

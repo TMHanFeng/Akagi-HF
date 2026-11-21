@@ -9,6 +9,12 @@
   </picture>
 </p>
 
+> [!TIP]
+> **本倉庫是原始碼，不含可直接執行的程式。**
+> 想要「下載即用」的完整包 → 到 [Releases 頁](../../releases) 下載 `Akagi-v3增强版.zip`；
+> 想在 Windows 上自行編譯 → 讀 [BUILD.zh-CN.md](./BUILD.zh-CN.md)（含實際跑通的工具鏈
+> 與三個必踩的坑）。
+
 <p align="center">
   <i>「死ねば助かるのに………」 - 赤木しげる</i>
   <br/><br/>
