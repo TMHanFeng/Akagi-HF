@@ -6,6 +6,7 @@
 //! names quickly and renames break dashboards.
 
 use crate::analysis::result::AnalysisResult;
+use crate::autoplay::plan::RequeueStatus;
 use crate::bot::install::{self, GithubInstallSpec, LocalZipInstallSpec};
 use crate::bot::manifest::{self, BotSource};
 use crate::bot::runtime;
@@ -185,6 +186,7 @@ pub async fn update_config(
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default();
         let started_flag = state.autoplay_manager_started.clone();
+        let plan_for_ap = state.requeue_plan.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(e) = crate::autoplay::run_autoplay_manager(
                 cfg_for_ap,
@@ -194,6 +196,7 @@ pub async fn update_config(
                 resp_for_ap,
                 notify_for_ap,
                 config_dir_for_ap,
+                plan_for_ap,
             )
             .await
             {
@@ -202,6 +205,120 @@ pub async fn update_config(
             }
         });
     }
+    Ok(())
+}
+
+/// The live play plan: how many games are done, how many are left, and
+/// when the batch must stop.
+///
+/// Read by the overlay (its footer row) and by the Settings page. The
+/// budget and the cutoff come from the config, the counter from the
+/// shared plan — see `crate::autoplay::plan`.
+#[tauri::command]
+pub async fn get_requeue_status(state: State<'_, AppState>) -> CmdResult<RequeueStatus> {
+    let (max_games, stop_at) = {
+        let cfg = state.config.read().await;
+        let stop_at = cfg.autoplay.requeue.stop_at.trim().to_string();
+        (
+            cfg.autoplay.requeue.max_games,
+            // An empty string is "no cutoff" — the frontend renders it as an
+            // empty field, not as a cutoff of midnight.
+            if stop_at.is_empty() { None } else { Some(stop_at) },
+        )
+    };
+    let plan = state.requeue_plan.lock().await;
+    Ok(plan.status(max_games, stop_at))
+}
+
+/// A change to the play plan. Every field is optional and a `None` leaves
+/// that field alone, so the overlay can move one knob without having to
+/// know the others.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RequeuePlanPatch {
+    /// The new game budget. `None` leaves the budget alone.
+    #[serde(default)]
+    pub max_games: Option<u32>,
+    /// The new wall-clock cutoff, `HH:MM`. `None` leaves the cutoff alone.
+    #[serde(default)]
+    pub stop_at: Option<String>,
+    /// Clear the cutoff. `stop_at` is ignored when this is set — an
+    /// omitted field and an explicit "no cutoff" are different intents,
+    /// and a single `Option` cannot carry both.
+    #[serde(default)]
+    pub clear_stop_at: bool,
+}
+
+/// Change the plan while it runs: the game budget and the wall-clock
+/// cutoff. Both take effect on the next game that ends — nothing is
+/// restarted and the game in play is always finished.
+#[tauri::command]
+pub async fn set_requeue_plan(
+    patch: RequeuePlanPatch,
+    state: State<'_, AppState>,
+) -> CmdResult<()> {
+    if let Some(stop_at) = patch.stop_at.as_deref() {
+        if !patch.clear_stop_at && crate::autoplay::plan::parse_deadline(stop_at).is_none() {
+            // A cutoff that cannot be read would silently never fire, so it
+            // is refused rather than stored.
+            return Err(format!("not an HH:MM time: {stop_at}"));
+        }
+    }
+    let cfg = {
+        let mut cfg = state.config.write().await;
+        if let Some(max_games) = patch.max_games {
+            cfg.autoplay.requeue.max_games = max_games;
+        }
+        if patch.clear_stop_at {
+            // An empty string, not `None`: the config file is written by
+            // merging into what is on disk, and a `None` is simply not
+            // written — the old value would come back on the next start.
+            cfg.autoplay.requeue.stop_at = String::new();
+        } else if let Some(stop_at) = patch.stop_at {
+            cfg.autoplay.requeue.stop_at = stop_at;
+        }
+        cfg.clone()
+    };
+    persist_config(&cfg, &state.config_path).map_err(|e| e.to_string())?;
+    tracing::info!(
+        "requeue: the plan was changed — max_games = {}, stop_at = {:?}",
+        cfg.autoplay.requeue.max_games,
+        cfg.autoplay.requeue.stop_at
+    );
+    Ok(())
+}
+
+/// "Stop after the game in play": the budget becomes the counter plus one,
+/// so the game that is running now is the last one.
+#[tauri::command]
+pub async fn stop_after_current_game(state: State<'_, AppState>) -> CmdResult<()> {
+    let games = state.requeue_plan.lock().await.games;
+    let target = crate::autoplay::plan::budget_for_current_game(games);
+    let cfg = {
+        let mut cfg = state.config.write().await;
+        cfg.autoplay.requeue.max_games = target;
+        cfg.clone()
+    };
+    persist_config(&cfg, &state.config_path).map_err(|e| e.to_string())?;
+    tracing::info!("requeue: stopping after the game in play (budget set to {target})");
+    Ok(())
+}
+
+/// Restart the counter at zero, so the next game is the first of a fresh
+/// budget. This is the explicit "start a new batch" — changing the budget
+/// no longer does it by itself.
+#[tauri::command]
+pub async fn reset_requeue_counter(state: State<'_, AppState>) -> CmdResult<()> {
+    {
+        let mut plan = state.requeue_plan.lock().await;
+        plan.games = 0;
+    }
+    let path = state
+        .config_path
+        .parent()
+        .map(|p| crate::autoplay::plan::progress_path(p))
+        .unwrap_or_default();
+    crate::autoplay::plan::save_games(&path, 0).await;
+    tracing::info!("requeue: the counter was reset");
     Ok(())
 }
 
@@ -1819,6 +1936,10 @@ macro_rules! ipc_handlers {
         ::tauri::generate_handler![
             $crate::ipc::commands::get_config,
             $crate::ipc::commands::update_config,
+            $crate::ipc::commands::get_requeue_status,
+            $crate::ipc::commands::set_requeue_plan,
+            $crate::ipc::commands::stop_after_current_game,
+            $crate::ipc::commands::reset_requeue_counter,
             $crate::ipc::commands::set_overlay_enabled,
             $crate::ipc::commands::list_bots,
             $crate::ipc::commands::set_active_bot,

@@ -346,6 +346,17 @@ fn push_pre_delay(
         .and_then(|s| s.try_decide(&input))
         .unwrap_or_else(|| delay::decide(&input, &mut rand::rng()));
 
+    // Optional extra random delay on top of the model's target (see
+    // `RandomDelayConfig`). The draw is bounded by the budget headroom
+    // the model's answer left over, so a jittered decision can never run
+    // the window into the client's auto-discard. A script owns its own
+    // caps and may already be spending the extra-time pool, so the hard
+    // cap (soft + the pool allowance) is the yardstick there.
+    let extra = ctx.cfg.random_delay.extra_for(kind, &mut rand::rng());
+    let headroom = delay::budget_cap(&input, decision.allow_bank || decision.from_script)
+        .saturating_sub(decision.total_target_ms);
+    let total_target_ms = decision.total_target_ms.saturating_add(extra.min(headroom));
+
     // Convert target total time to a sleep: subtract what the window has
     // already consumed AND what the click sequence itself will take —
     // the target is the server-observed total, and hover/hold/candidate
@@ -355,11 +366,10 @@ fn push_pre_delay(
     // budgeted here as a single interval (the calibration source measures
     // declaration plus tile as one server-observed interval).
     let sleep = match ctx.budget {
-        Some(b) => decision
-            .total_target_ms
+        Some(b) => total_target_ms
             .saturating_sub(b.elapsed_ms)
             .saturating_sub(click_overhead_ms),
-        None => decision.total_target_ms.saturating_sub(click_overhead_ms),
+        None => total_target_ms.saturating_sub(click_overhead_ms),
     };
     // The overhead deduction must not undercut UI readiness: the first
     // click still has to land after the functional floor. Time already
@@ -773,6 +783,7 @@ mod tests {
             click_retries: 0,
             reload_after_failures: 0,
             dealer_first_discard_extra_delay_ms: crate::config::MsRange::fixed(0),
+            random_delay: crate::config::RandomDelayConfig::default(),
         }
     }
 

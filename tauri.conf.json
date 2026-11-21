@@ -1,6 +1,6 @@
 {
   "productName": "Akagi",
-  "identifier": "com.akagi.akagi",
+  "identifier": "com.akagi.akagi.v3",
   "build": {
     "frontendDist": "./frontend/dist",
     "devUrl": "http://localhost:1420",

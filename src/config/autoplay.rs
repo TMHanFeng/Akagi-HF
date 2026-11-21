@@ -41,6 +41,220 @@ pub struct AutoplayConfig {
     pub majsoul: MajsoulAutoplayConfig,
     /// Pre-click delay model (platform-agnostic). See `autoplay::delay`.
     pub delay: DelayModelConfig,
+    /// Automatic "play again" after a game ends. See `autoplay::requeue`.
+    pub requeue: RequeueConfig,
+}
+
+/// Automatic "play again" after a game ends.
+///
+/// The autoplay loop itself stops at the table; this is the outer loop:
+/// dismiss the result screens, press the 再來一場 control, and stop after
+/// `max_games` games. See `autoplay::requeue`.
+///
+/// The geometry is not guesswork — it was measured on the live client
+/// (2026-11-20, 繁體中文 client, two 半庄 finished and then walked
+/// through by hand):
+///
+/// * the 確定 control sits at the bottom right of the result screen, the
+///   禮物盒 panel and the 道具 panel alike — one coordinate for all three;
+/// * the 再來一場 control sits on the reward panel, immediately to the
+///   left of 確定;
+/// * pressing 再來一場 does **not** ask for a game — it opens a second
+///   dialog ("要再進行一場 … 的匹配對局嗎?"), and it is the 確定 button
+///   *inside that dialog* that makes the client request the match.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RequeueConfig {
+    /// Master switch. When `false`, a finished game is left alone.
+    pub enabled: bool,
+    /// Stop after this many finished games. `0` means never stop.
+    ///
+    /// This is a budget for the whole run, not a batch that restarts when
+    /// the number changes: lowering it stops the loop earlier, raising it
+    /// lets the loop continue, and the counter of finished games keeps
+    /// running either way (see `autoplay::plan`). The counter only restarts
+    /// when the user asks for it explicitly.
+    pub max_games: u32,
+    /// A daily wall-clock cutoff, `HH:MM` local time, after which no new
+    /// game is started. An empty string means no cutoff.
+    ///
+    /// The game in play is always finished — the cutoff applies to the
+    /// *next* one. It is a moment of the day, not a duration: a cutoff of
+    /// `03:00` set at one in the morning means "play until three", and the
+    /// same value set at ten in the morning means "nothing new after
+    /// three". An unparseable value is ignored (with a warning in the log)
+    /// rather than stopping the bot.
+    ///
+    /// A plain string rather than an `Option`: the config file is written
+    /// by *merging* into whatever is already on disk, and a `None` is
+    /// simply not written — so an `Option` could never be cleared once set
+    /// (it would come back on the next start). An empty string is this
+    /// codebase's usual "not set" for a string field (see
+    /// `network.github_custom_mirror`).
+    pub stop_at: String,
+    /// The 確定 control on the result and reward screens, 16:9-normalised.
+    pub result_confirm: [f64; 2],
+    /// The 再來一場 control on the reward panel, 16:9-normalised. `None`
+    /// leaves the client in the lobby — the result screens are still
+    /// dismissed.
+    pub queue_button: Option<[f64; 2]>,
+    /// The 確定 control *inside* the dialog that 再來一場 opens,
+    /// 16:9-normalised.
+    ///
+    /// This is the button that actually asks for the next game: pressing
+    /// 再來一場 itself sends nothing on the wire (measured), it only opens
+    /// the confirmation dialog, and the match request goes out about two
+    /// seconds after the dialog's own 確定 is pressed.
+    pub queue_dialog_confirm: [f64; 2],
+    /// The 匹配對局 control on the match-preparation screen, 16:9-normalised.
+    ///
+    /// This is the screen the client lands on when 確定 is pressed on the
+    /// reward panel: a rule card for the next game (「寶牌雙刃」) with a big
+    /// orange 匹配對局 button under it. Pressing it asks for a match on the
+    /// spot — no confirmation dialog. It is the loop's last resort: by the
+    /// time the client is there, the 再來一場 control is gone, so the button
+    /// is the only way left into the next game.
+    pub match_button: Option<[f64; 2]>,
+    /// Extra dismiss buttons, 16:9-normalised — one `[x, y]` per entry.
+    ///
+    /// Between the result screen and the lobby the client pops panels of
+    /// its own: an event notice, an "item received" panel. Neither sends a
+    /// protocol message, so the only way past them is a click, and they sit
+    /// at their own fixed spots rather than where the confirm button is.
+    /// The requeue loop tries these alongside the primary buttons and stops
+    /// the moment the client answers on the wire — so a wrong guess costs
+    /// one wasted press, never a wrong action.
+    pub extra_buttons: Vec<[f64; 2]>,
+    /// How many presses the whole loop may make. It is a cap, not a
+    /// script: the client walks through up to three result screens before
+    /// the match-preparation screen, and the loop stops as soon as the
+    /// client answers on the wire.
+    ///
+    /// The walk is three presses per round — 再來一場, the dialog's own
+    /// 確定, 確定 — and the client needs up to three rounds to reach the
+    /// reward panel, plus one round to use the dialog. The default leaves
+    /// room for two rounds of waste: the result screens animate, and a
+    /// press that lands while the animation is still running does nothing
+    /// at all (measured — the loop then has to press again).
+    pub max_confirm_presses: u32,
+    /// How many of those presses may land on the 確定 control. `0` means
+    /// no separate limit.
+    ///
+    /// The 確定 control is the one that is *not* inert in the lobby:
+    /// measured on the live client, pressing it there sends the client to
+    /// the rank-match route and starts a game. The result screens the
+    /// client walks never include the lobby — the reward panel's 確定 goes
+    /// to the match-preparation screen (measured) — so a limit is a belt
+    /// and braces, not the reason the walk is safe.
+    ///
+    /// The default is comfortably above the three result screens, so an
+    /// animation that eats one 確定 press does not strand the loop.
+    pub max_dismiss_presses: u32,
+    /// Wait before the first press.
+    pub result_delay_ms: u32,
+    /// How long to wait after a press before the next one, in ms.
+    ///
+    /// This is the settle time: the client animates every screen it shows,
+    /// and a press that lands during the animation does nothing. The
+    /// default outlasts the animation of the result panels.
+    pub step_wait_ms: u32,
+    /// Wait between two presses. Also the settle time for the client's
+    /// animation.
+    pub between_press_delay_ms: u32,
+    /// How long to watch the wire after a press before trying the next
+    /// control.
+    ///
+    /// This window has to outlast the client's answer: the match request
+    /// goes out the moment the dialog's own 確定 is pressed (measured on
+    /// the live client — the request was on the wire in the same
+    /// millisecond as the click), so a shorter window would let the loop
+    /// press once more on a screen that is already gone.
+    pub queue_confirm_timeout_ms: u32,
+    /// Hover delay before the press, in ms.
+    pub hover_delay_ms: u32,
+    /// How long the mouse button is held, in ms.
+    pub click_hold_ms: u32,
+}
+
+impl RequeueConfig {
+    /// The 確定 control on the result and reward screens, 16:9-normalised.
+    /// Measured against the live client: the score board, the gift box and
+    /// the reward panel all put their 確定 here.
+    pub const DEFAULT_RESULT_CONFIRM: [f64; 2] = [14.59, 8.37];
+
+    /// The 再來一場 control on the reward panel, 16:9-normalised. Measured
+    /// against the live client, next to the 確定 control.
+    pub const DEFAULT_QUEUE_BUTTON: [f64; 2] = [12.23, 8.34];
+
+    /// The 確定 control inside the dialog that 再來一場 opens,
+    /// 16:9-normalised. Measured against the live client: the dialog is
+    /// centred, its 確定 is the gold plate on the left.
+    pub const DEFAULT_QUEUE_DIALOG_CONFIRM: [f64; 2] = [6.58, 6.71];
+
+    /// The 匹配對局 control on the match-preparation screen,
+    /// 16:9-normalised. Measured against the live client: the screen
+    /// shows the rule card for the next game with a big orange button
+    /// under it, and pressing that button asks for the match directly.
+    pub const DEFAULT_MATCH_BUTTON: [f64; 2] = [10.87, 7.10];
+}
+
+impl Default for RequeueConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_games: 0,
+            stop_at: String::new(),
+            result_confirm: Self::DEFAULT_RESULT_CONFIRM,
+            queue_button: Some(Self::DEFAULT_QUEUE_BUTTON),
+            queue_dialog_confirm: Self::DEFAULT_QUEUE_DIALOG_CONFIRM,
+            match_button: Some(Self::DEFAULT_MATCH_BUTTON),
+            extra_buttons: Vec::new(),
+            max_confirm_presses: 36,
+            max_dismiss_presses: 15,
+            result_delay_ms: 2000,
+            step_wait_ms: 2000,
+            between_press_delay_ms: 0,
+            queue_confirm_timeout_ms: 1200,
+            hover_delay_ms: 400,
+            click_hold_ms: 300,
+        }
+    }
+}
+
+/// An extra random delay added **on top of** the delay model's target.
+///
+/// The model already produces a human-shaped think time. This adds a
+/// second, independent draw on top of it, so the *observable* click
+/// time varies from decision to decision even where the model's own
+/// distribution is narrow — the last mile of looking unhurried rather
+/// than metronomic. Off by default.
+///
+/// Chi and pon are excluded by default: their reaction window is
+/// short, and a claim that arrives late is simply lost. The delay buys
+/// nothing there and costs the call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RandomDelayConfig {
+    /// Master switch. When `false`, no extra delay is ever added.
+    pub enabled: bool,
+    /// Lower bound of the extra delay, ms. The draw is uniform inside
+    /// `[min_ms, max_ms]`.
+    pub min_ms: u32,
+    /// Upper bound of the extra delay, ms.
+    pub max_ms: u32,
+    /// Skip chi and pon decisions. On by default — see the type docs.
+    pub exclude_chi_pon: bool,
+}
+
+impl Default for RandomDelayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_ms: 0,
+            max_ms: 3000,
+            exclude_chi_pon: true,
+        }
+    }
 }
 
 /// Which delay policy drives autoplay. Exactly one is active.
@@ -268,6 +482,9 @@ pub struct MajsoulAutoplayConfig {
     /// the regular pre-click delay anyway).
     #[serde(deserialize_with = "upgrade_dealer_first_discard_extra")]
     pub dealer_first_discard_extra_delay_ms: MsRange,
+    /// An extra random delay on top of the delay model's target. See
+    /// [`RandomDelayConfig`].
+    pub random_delay: RandomDelayConfig,
 }
 
 impl MajsoulAutoplayConfig {
@@ -297,6 +514,7 @@ impl Default for MajsoulAutoplayConfig {
             click_retries: 2,
             reload_after_failures: 3,
             dealer_first_discard_extra_delay_ms: DEALER_FIRST_DISCARD_EXTRA,
+            random_delay: RandomDelayConfig::default(),
         }
     }
 }
@@ -347,6 +565,31 @@ mod tests {
         assert_eq!(cfg.delay.min_delay_ms, MIN_DELAY);
         assert_eq!(cfg.delay.min_button_delay_ms, MsRange::fixed(2000));
         assert_eq!(cfg.majsoul.verify_input_ms, VERIFY_INPUT, "absent: default");
+    }
+
+    /// A config written before the random-delay module existed has no
+    /// `[majsoul.random_delay]` table — it must pick up the defaults
+    /// (off, 0–3000 ms, chi/pon excluded) rather than zeros.
+    #[test]
+    fn missing_random_delay_section_gets_defaults() {
+        let cfg: AutoplayConfig = toml::from_str("enabled = true").unwrap();
+        let d = RandomDelayConfig::default();
+        assert!(!cfg.majsoul.random_delay.enabled);
+        assert_eq!(cfg.majsoul.random_delay.min_ms, d.min_ms);
+        assert_eq!(cfg.majsoul.random_delay.max_ms, d.max_ms);
+        assert!(cfg.majsoul.random_delay.exclude_chi_pon);
+    }
+
+    /// A partial `[majsoul.random_delay]` table keeps what it says and
+    /// fills the rest from the defaults.
+    #[test]
+    fn partial_random_delay_section_fills_remaining_defaults() {
+        let cfg: AutoplayConfig =
+            toml::from_str("[majsoul.random_delay]\nenabled = true\nmax_ms = 1200\n").unwrap();
+        assert!(cfg.majsoul.random_delay.enabled);
+        assert_eq!(cfg.majsoul.random_delay.max_ms, 1200);
+        assert_eq!(cfg.majsoul.random_delay.min_ms, 0);
+        assert!(cfg.majsoul.random_delay.exclude_chi_pon);
     }
 
     /// A decision's settings hold one drawn value per range, inside it.

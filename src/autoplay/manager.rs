@@ -67,6 +67,11 @@ pub struct AutoplayManager {
     /// decision would be to a person (see `autoplay::advisor`). Pacing only,
     /// on every platform.
     advisor: crate::autoplay::advisor::Advisor,
+    /// The requeue plan's counter. Kept outside `ManagerState` because that
+    /// state is reset on every `EndGame`. Shared with the IPC commands, so
+    /// the Settings page and the overlay can read the counter and change
+    /// the plan while the loop runs.
+    requeue: crate::autoplay::plan::SharedPlan,
 }
 
 #[derive(Default)]
@@ -98,6 +103,7 @@ impl AutoplayManager {
         mjai_bus: MjaiBus,
         notify: NotifyBus,
         config_dir: std::path::PathBuf,
+        requeue: crate::autoplay::plan::SharedPlan,
     ) -> Self {
         Self {
             cfg,
@@ -112,6 +118,7 @@ impl AutoplayManager {
             delay_script: crate::autoplay::delay::ScriptHost::default(),
             config_dir,
             advisor: crate::autoplay::advisor::Advisor::default(),
+            requeue,
         }
     }
 
@@ -135,6 +142,23 @@ impl AutoplayManager {
             .await;
         });
 
+        // The plan's counter survives a restart of the app: it is read back
+        // from a small file next to the config, so a plan set up for the
+        // night is still in force after a crash or a relaunch. The budget
+        // and the cutoff need no such care — they live in the config and
+        // are read fresh every time a game ends, so changing either one
+        // takes effect on the very next game without a restart.
+        let requeue_state = self.requeue.clone();
+        let progress_file = crate::autoplay::plan::progress_path(&self.config_dir);
+        tauri::async_runtime::spawn(async move {
+            let saved = crate::autoplay::plan::load_games(&progress_file).await;
+            if saved > 0 {
+                let mut state = requeue_state.lock().await;
+                state.games = saved;
+                info!("requeue: restored the counter at {saved} game(s) from the last run");
+            }
+        });
+
         loop {
             // Game events first: a reply is published only after the event
             // that triggered it, so when both are waiting (a plan just held
@@ -145,7 +169,21 @@ impl AutoplayManager {
                 biased;
                 msg = mjai_rx.recv() => match msg {
                     Ok(ev) => {
+                        // A confirmed game end is the trigger for the outer
+                        // "play again" loop (see `autoplay::requeue`). A
+                        // terminated session (the server cut the game) is
+                        // not a finished game and must not be counted as one.
+                        let game_ended = matches!(
+                            ev,
+                            MjaiEvent::EndGame {
+                                reason: crate::schema::GameEndReason::Confirmed,
+                                ..
+                            }
+                        );
                         self.handle_mjai_event(&ev);
+                        if game_ended {
+                            self.handle_requeue().await;
+                        }
                     }
                     Err(RecvError::Lagged(n)) => {
                         warn!("autoplay: mjai bus lagged {n}");
@@ -1015,6 +1053,72 @@ impl AutoplayManager {
             }
         }
     }
+
+    /// A game just ended: count it and, unless the plan says stop, start the
+    /// "play again" sequence.
+    async fn handle_requeue(&mut self) {
+        let cfg_guard = self.cfg.read().await;
+        if !cfg_guard.autoplay.enabled {
+            return;
+        }
+        let requeue = cfg_guard.autoplay.requeue.clone();
+        let platform_kind = cfg_guard.platform.kind;
+        drop(cfg_guard);
+
+        if !requeue.enabled {
+            return;
+        }
+        if !matches!(platform_kind, crate::config::Platform::Majsoul) {
+            warn!("requeue: only supported on Majsoul");
+            return;
+        }
+
+        // Count the game. The counter is the run's, not a batch's: it does
+        // not restart when the user changes the limit, because that is how
+        // "play N more" and "stop after this one" are told apart.
+        let played = {
+            let mut plan = self.requeue.lock().await;
+            plan.games = plan.games.saturating_add(1);
+            plan.games
+        };
+        let progress_file = crate::autoplay::plan::progress_path(&self.config_dir);
+        crate::autoplay::plan::save_games(&progress_file, played).await;
+
+        // The two stop conditions. Both apply *between* games — the game in
+        // play is always finished, only the next one is withheld.
+        let mut reasons: Vec<String> = Vec::new();
+        if requeue.max_games > 0 && played >= requeue.max_games {
+            reasons.push(format!(
+                "the configured maximum of {} game(s)",
+                requeue.max_games
+            ));
+        }
+        let cutoff = requeue.stop_at.trim();
+        if !cutoff.is_empty() {
+            match crate::autoplay::plan::parse_deadline(cutoff) {
+                Some(deadline) => {
+                    if crate::autoplay::plan::deadline_passed_at(
+                        deadline,
+                        chrono::Local::now(),
+                    ) {
+                        reasons.push(format!("the configured cutoff {cutoff}"));
+                    }
+                }
+                None => warn!(
+                    "requeue: the configured cutoff {cutoff:?} is not an HH:MM time — ignoring it"
+                ),
+            }
+        }
+        if !reasons.is_empty() {
+            info!("requeue: stopping — {}", reasons.join(" and "));
+            return;
+        }
+
+        let ctx = self.ctx.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::autoplay::requeue::run_requeue(ctx, requeue, played).await;
+        });
+    }
 }
 
 /// What the table says about this decision (`autoplay::table`): whether the
@@ -1257,8 +1361,9 @@ pub async fn run_autoplay_manager(
     response_bus: BotResponseBus,
     notify: NotifyBus,
     config_dir: std::path::PathBuf,
+    requeue: crate::autoplay::plan::SharedPlan,
 ) -> anyhow::Result<()> {
-    AutoplayManager::new(cfg, ctx, tracker, mjai_bus, notify, config_dir)
+    AutoplayManager::new(cfg, ctx, tracker, mjai_bus, notify, config_dir, requeue)
         .run(response_bus)
         .await
 }
@@ -1433,6 +1538,7 @@ mod tests {
             bus,
             crate::event_bus::notify_bus(),
             std::env::temp_dir(),
+            Arc::new(Mutex::new(crate::autoplay::plan::PlanState::default())),
         )
     }
 

@@ -38,7 +38,7 @@ pub use script::{
     ScriptHost, ScriptState,
 };
 
-use crate::config::{DelayDistribution, DelayModelConfig, MajsoulAutoplayConfig};
+use crate::config::{DelayDistribution, DelayModelConfig, MajsoulAutoplayConfig, RandomDelayConfig};
 use rand::Rng;
 
 /// What kind of action the bot chose. Derived from the mjai event; used
@@ -71,6 +71,32 @@ impl DecisionKind {
     /// decisions carry a higher UI-readiness floor.
     pub fn clicks_action_button(self) -> bool {
         !matches!(self, Self::Dahai)
+    }
+}
+
+impl RandomDelayConfig {
+    /// The extra delay for this decision, ms — `0` when the feature is
+    /// off, when the decision is excluded, or when the window is
+    /// degenerate.
+    ///
+    /// The draw is uniform inside `[min_ms, max_ms]`: a plain "wait a
+    /// random slice of time" knob. A hand-edited config with `min_ms`
+    /// above `max_ms` is read as a fixed `min_ms` rather than an
+    /// inverted range.
+    pub fn extra_for<R: Rng + ?Sized>(&self, kind: DecisionKind, rng: &mut R) -> u32 {
+        if !self.enabled {
+            return 0;
+        }
+        if self.exclude_chi_pon && matches!(kind, DecisionKind::Chi | DecisionKind::Pon) {
+            return 0;
+        }
+        let lo = self.min_ms;
+        let hi = self.max_ms.max(lo);
+        if hi == lo {
+            lo
+        } else {
+            rng.random_range(lo..=hi)
+        }
     }
 }
 
@@ -503,6 +529,53 @@ mod tests {
                 dec.total_target_ms
             );
             assert!(!dec.allow_bank);
+        }
+    }
+
+    /// The extra random delay is opt-in, and a chi/pon decision never
+    /// gets one while the exclusion is on.
+    #[test]
+    fn the_extra_random_delay_is_opt_in_and_skips_chi_pon() {
+        let mut rng = StdRng::seed_from_u64(AKAGI_SEED);
+        let mut cfg = RandomDelayConfig::default();
+        assert!(!cfg.enabled, "the extra delay must be off by default");
+        assert_eq!(cfg.extra_for(DecisionKind::Dahai, &mut rng), 0);
+
+        cfg.enabled = true;
+        cfg.min_ms = 0;
+        cfg.max_ms = 3000;
+        assert!(cfg.exclude_chi_pon, "chi/pon are excluded by default");
+        assert_eq!(cfg.extra_for(DecisionKind::Chi, &mut rng), 0);
+        assert_eq!(cfg.extra_for(DecisionKind::Pon, &mut rng), 0);
+        for _ in 0..500 {
+            assert!((0..=3000).contains(&cfg.extra_for(DecisionKind::Dahai, &mut rng)));
+        }
+
+        // With the exclusion off, chi/pon draw a delay too.
+        cfg.exclude_chi_pon = false;
+        let mut drew = false;
+        for _ in 0..500 {
+            if cfg.extra_for(DecisionKind::Chi, &mut rng) > 0 {
+                drew = true;
+                break;
+            }
+        }
+        assert!(drew, "chi must draw a delay once the exclusion is off");
+    }
+
+    /// An inverted range in a hand-edited config is read as a fixed
+    /// value, not as an error or a silent zero.
+    #[test]
+    fn an_inverted_random_delay_range_is_a_fixed_value() {
+        let mut rng = StdRng::seed_from_u64(AKAGI_SEED);
+        let cfg = RandomDelayConfig {
+            enabled: true,
+            min_ms: 500,
+            max_ms: 100,
+            exclude_chi_pon: true,
+        };
+        for _ in 0..100 {
+            assert_eq!(cfg.extra_for(DecisionKind::Dahai, &mut rng), 500);
         }
     }
 

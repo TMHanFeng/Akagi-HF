@@ -37,6 +37,12 @@ pub struct AutoplayContext {
     /// click and asks afterwards whether the count moved — the proof that
     /// the click registered (see `autoplay::verify`).
     pub input_watch: crate::autoplay::verify::SharedInputWatch,
+    /// Counter of the client's own lobby-bound requests, bumped by the
+    /// Majsoul bridge as it parses. The requeue loop takes a ticket before
+    /// a press and asks afterwards whether the count moved — the proof
+    /// that the press dismissed the result screen (see
+    /// `autoplay::lobby_watch`).
+    pub lobby_watch: crate::autoplay::lobby_watch::SharedLobbyWatch,
     /// Tenhou's hand at tile-index resolution plus its current decision
     /// window, written by the Tenhou bridge (see `autoplay::tenhou_state`).
     /// Read by the Tenhou autoplay planner, which encodes a client frame

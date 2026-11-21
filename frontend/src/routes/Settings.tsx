@@ -3,6 +3,7 @@ import { Link, useBlocker } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { getVersion } from '@tauri-apps/api/app'
 import { toast } from 'sonner'
+import { Plus, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,6 +26,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { HAS_TAURI, invoke } from '@/lib/tauri'
+import { useRequeueStatus } from '@/lib/requeuePlan'
 import { openExternal } from '@/lib/external'
 import { useSidebar } from '@/hooks/useSidebar'
 import { useAnnouncementStore } from '@/stores/announcementStore'
@@ -69,6 +71,8 @@ import type {
   NetworkConfig,
   OverlayConfig,
   PlatformKind,
+  RandomDelayConfig,
+  RequeueConfig,
 } from '@/types'
 
 export function Settings() {
@@ -885,25 +889,58 @@ function AutoplayCard({
       click_retries: 2,
       reload_after_failures: 3,
       dealer_first_discard_extra_delay_ms: [2000, 3000],
+      random_delay: defaultRandomDelayConfig(),
     },
     delay: defaultDelayModel(),
   }
   const delay = ap.delay ?? defaultDelayModel()
+  // The requeue table is newer than the config file: a config written before
+  // the module existed has none, so the defaults stand in. `extra_buttons`
+  // is newer still — a config written before it does too.
+  const requeue = ap.requeue
+    ? {
+        ...defaultRequeueConfig(),
+        ...ap.requeue,
+        extra_buttons: ap.requeue.extra_buttons ?? [],
+        // A config written before the cutoff existed has none; the backend
+        // fills it in, but the draft must not depend on that.
+        stop_at: ap.requeue.stop_at ?? '',
+      }
+    : defaultRequeueConfig()
+  // Same for the extra random delay.
+  const randomDelay = ap.majsoul.random_delay ?? defaultRandomDelayConfig()
   const captureIsChromium = draft.capture?.mode === 'chromium'
   // Riichi City autoplay runs through the MITM proxy (frame injection), so
   // the Chromium-mode requirement only applies to the click platforms.
   const platformIsRiichiCity = draft.platform?.kind === 'RiichiCity'
   const setApField = (patch: Partial<typeof ap>) =>
-    setDraft({ ...draft, autoplay: { ...ap, ...patch } })
+    setDraft({ ...draft, autoplay: { ...ap, requeue, ...patch } })
   const setMajsoulField = (patch: Partial<typeof ap.majsoul>) =>
     setDraft({
       ...draft,
-      autoplay: { ...ap, majsoul: { ...ap.majsoul, ...patch } },
+      autoplay: { ...ap, requeue, majsoul: { ...ap.majsoul, ...patch } },
+    })
+  const setRandomDelayField = (patch: Partial<RandomDelayConfig>) =>
+    setDraft({
+      ...draft,
+      autoplay: {
+        ...ap,
+        requeue,
+        majsoul: {
+          ...ap.majsoul,
+          random_delay: { ...randomDelay, ...patch },
+        },
+      },
     })
   const setDelayField = (patch: Partial<DelayModelConfig>) =>
     setDraft({
       ...draft,
-      autoplay: { ...ap, delay: { ...delay, ...patch } },
+      autoplay: { ...ap, requeue, delay: { ...delay, ...patch } },
+    })
+  const setRequeueField = (patch: Partial<RequeueConfig>) =>
+    setDraft({
+      ...draft,
+      autoplay: { ...ap, requeue: { ...requeue, ...patch } },
     })
   return (
     <Card>
@@ -1055,12 +1092,575 @@ function AutoplayCard({
           step={100}
           onChange={(v) => setMajsoulField({ dealer_first_discard_extra_delay_ms: v })}
         />
+        {/* Extra random delay: a second, independent draw on top of the
+            delay model's target, so the observed click time varies from
+            decision to decision instead of following one fixed curve. */}
+        <div className="border-t pt-4 grid gap-4">
+          <Toggle
+            label={t('settings.autoplay.random_delay_enable')}
+            value={randomDelay.enabled}
+            onChange={(v) => setRandomDelayField({ enabled: v })}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t('settings.autoplay.random_delay_enable_help')}
+          </p>
+          {randomDelay.enabled && (
+            <>
+              <RangeField
+                label={t('settings.autoplay.random_delay_range')}
+                hint={t('settings.autoplay.random_delay_range_hint')}
+                value={[randomDelay.min_ms, randomDelay.max_ms]}
+                max={10000}
+                step={100}
+                onChange={([min, max]) =>
+                  setRandomDelayField({ min_ms: min, max_ms: max })
+                }
+              />
+              <Toggle
+                label={t('settings.autoplay.random_delay_exclude_chi_pon')}
+                value={randomDelay.exclude_chi_pon}
+                onChange={(v) => setRandomDelayField({ exclude_chi_pon: v })}
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('settings.autoplay.random_delay_exclude_chi_pon_help')}
+              </p>
+            </>
+          )}
+        </div>
         <p className="text-xs text-muted-foreground">
           {t('settings.autoplay.platform_note')}
         </p>
+        {/* Requeue: the outer loop that starts the next game after one ends. */}
+        <div className="border-t pt-4 grid gap-4">
+          <Toggle
+            label={t('settings.autoplay.requeue_enable')}
+            value={requeue.enabled}
+            onChange={(v) => setRequeueField({ enabled: v })}
+          />
+          <p className="text-xs text-muted-foreground">
+            {t('settings.autoplay.requeue_enable_help')}
+          </p>
+          {requeue.enabled && (
+            <>
+              <Field
+                label={t('settings.autoplay.requeue_max_games')}
+                hint={t('settings.autoplay.requeue_max_games_hint')}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={requeue.max_games}
+                  onChange={(e) =>
+                    setRequeueField({
+                      max_games: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                    })
+                  }
+                />
+              </Field>
+              <RequeuePlanSummary />
+              <Field
+                label={t('settings.autoplay.requeue_stop_at')}
+                hint={t('settings.autoplay.requeue_stop_at_hint')}
+              >
+                <Input
+                  type="time"
+                  value={requeue.stop_at}
+                  onChange={(e) =>
+                    setRequeueField({ stop_at: e.target.value })
+                  }
+                />
+              </Field>
+              <Toggle
+                label={t('settings.autoplay.requeue_queue_button')}
+                value={requeue.queue_button != null}
+                onChange={(v) =>
+                  setRequeueField({
+                    queue_button: v
+                      ? [
+                          requeue.queue_button?.[0] ?? DEFAULT_QUEUE_BUTTON[0],
+                          requeue.queue_button?.[1] ?? DEFAULT_QUEUE_BUTTON[1],
+                        ]
+                      : null,
+                  })
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('settings.autoplay.requeue_queue_button_help')}
+              </p>
+              {requeue.queue_button != null && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('settings.autoplay.requeue_queue_x')}>
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      step={0.01}
+                      value={requeue.queue_button[0]}
+                      onChange={(e) =>
+                        setRequeueField({
+                          queue_button: [
+                            Number(e.target.value) || 0,
+                            requeue.queue_button![1],
+                          ],
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label={t('settings.autoplay.requeue_queue_y')}>
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      step={0.01}
+                      value={requeue.queue_button[1]}
+                      onChange={(e) =>
+                        setRequeueField({
+                          queue_button: [
+                            requeue.queue_button![0],
+                            Number(e.target.value) || 0,
+                          ],
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+              )}
+              <Field
+                label={t('settings.autoplay.requeue_confirm_button')}
+                hint={t('settings.autoplay.requeue_confirm_button_help')}
+              >
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step={0.01}
+                    aria-label={t('settings.autoplay.requeue_confirm_x')}
+                    value={requeue.result_confirm[0]}
+                    onChange={(e) =>
+                      setRequeueField({
+                        result_confirm: [
+                          Number(e.target.value) || 0,
+                          requeue.result_confirm[1],
+                        ],
+                      })
+                    }
+                  />
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step={0.01}
+                    aria-label={t('settings.autoplay.requeue_confirm_y')}
+                    value={requeue.result_confirm[1]}
+                    onChange={(e) =>
+                      setRequeueField({
+                        result_confirm: [
+                          requeue.result_confirm[0],
+                          Number(e.target.value) || 0,
+                        ],
+                      })
+                    }
+                  />
+                </div>
+              </Field>
+              <Field
+                label={t('settings.autoplay.requeue_dialog_confirm')}
+                hint={t('settings.autoplay.requeue_dialog_confirm_help')}
+              >
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step={0.01}
+                    aria-label={t('settings.autoplay.requeue_confirm_x')}
+                    value={requeue.queue_dialog_confirm?.[0] ?? DEFAULT_QUEUE_DIALOG_CONFIRM[0]}
+                    onChange={(e) =>
+                      setRequeueField({
+                        queue_dialog_confirm: [
+                          Number(e.target.value) || 0,
+                          requeue.queue_dialog_confirm?.[1] ?? DEFAULT_QUEUE_DIALOG_CONFIRM[1],
+                        ],
+                      })
+                    }
+                  />
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step={0.01}
+                    aria-label={t('settings.autoplay.requeue_confirm_y')}
+                    value={requeue.queue_dialog_confirm?.[1] ?? DEFAULT_QUEUE_DIALOG_CONFIRM[1]}
+                    onChange={(e) =>
+                      setRequeueField({
+                        queue_dialog_confirm: [
+                          requeue.queue_dialog_confirm?.[0] ?? DEFAULT_QUEUE_DIALOG_CONFIRM[0],
+                          Number(e.target.value) || 0,
+                        ],
+                      })
+                    }
+                  />
+                </div>
+              </Field>
+              <Toggle
+                label={t('settings.autoplay.requeue_match_button')}
+                value={requeue.match_button != null}
+                onChange={(v) =>
+                  setRequeueField({
+                    match_button: v
+                      ? [
+                          requeue.match_button?.[0] ?? DEFAULT_MATCH_BUTTON[0],
+                          requeue.match_button?.[1] ?? DEFAULT_MATCH_BUTTON[1],
+                        ]
+                      : null,
+                  })
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('settings.autoplay.requeue_match_button_help')}
+              </p>
+              {requeue.match_button != null && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('settings.autoplay.requeue_match_x')}>
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      step={0.01}
+                      value={requeue.match_button[0]}
+                      onChange={(e) =>
+                        setRequeueField({
+                          match_button: [
+                            Number(e.target.value) || 0,
+                            requeue.match_button![1],
+                          ],
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field label={t('settings.autoplay.requeue_match_y')}>
+                    <Input
+                      type="number"
+                      inputMode="decimal"
+                      step={0.01}
+                      value={requeue.match_button[1]}
+                      onChange={(e) =>
+                        setRequeueField({
+                          match_button: [
+                            requeue.match_button![0],
+                            Number(e.target.value) || 0,
+                          ],
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+              )}
+              <Field
+                label={t('settings.autoplay.requeue_max_confirm_presses')}
+                hint={t('settings.autoplay.requeue_max_confirm_presses_hint')}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={60}
+                  value={requeue.max_confirm_presses}
+                  onChange={(e) =>
+                    setRequeueField({
+                      max_confirm_presses: Math.min(
+                        60,
+                        Math.max(1, Math.trunc(Number(e.target.value) || 1)),
+                      ),
+                    })
+                  }
+                />
+              </Field>
+              <PointListField
+                label={t('settings.autoplay.requeue_extra_buttons')}
+                hint={t('settings.autoplay.requeue_extra_buttons_hint')}
+                value={requeue.extra_buttons}
+                onChange={(v) => setRequeueField({ extra_buttons: v })}
+              />
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted-foreground">
+                  {t('settings.autoplay.requeue_timings')}
+                </summary>
+                <div className="mt-3 grid gap-3">
+                  <Field
+                    label={t('settings.autoplay.requeue_result_delay')}
+                    hint={t('settings.autoplay.requeue_result_delay_hint')}
+                  >
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={60000}
+                      step={100}
+                      value={requeue.result_delay_ms}
+                      onChange={(e) =>
+                        setRequeueField({
+                          result_delay_ms: Math.max(
+                            0,
+                            Math.trunc(Number(e.target.value) || 0),
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={t('settings.autoplay.requeue_step_wait')}
+                    hint={t('settings.autoplay.requeue_step_wait_hint')}
+                  >
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={60000}
+                      step={100}
+                      value={requeue.step_wait_ms}
+                      onChange={(e) =>
+                        setRequeueField({
+                          step_wait_ms: Math.max(
+                            0,
+                            Math.trunc(Number(e.target.value) || 0),
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={t('settings.autoplay.requeue_between_delay')}
+                    hint={t('settings.autoplay.requeue_between_delay_hint')}
+                  >
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={60000}
+                      step={100}
+                      value={requeue.between_press_delay_ms}
+                      onChange={(e) =>
+                        setRequeueField({
+                          between_press_delay_ms: Math.max(
+                            0,
+                            Math.trunc(Number(e.target.value) || 0),
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={t('settings.autoplay.requeue_queue_timeout')}
+                    hint={t('settings.autoplay.requeue_queue_timeout_hint')}
+                  >
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={60000}
+                      step={100}
+                      value={requeue.queue_confirm_timeout_ms}
+                      onChange={(e) =>
+                        setRequeueField({
+                          queue_confirm_timeout_ms: Math.max(
+                            0,
+                            Math.trunc(Number(e.target.value) || 0),
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={t('settings.autoplay.requeue_max_dismiss_presses')}
+                    hint={t('settings.autoplay.requeue_max_dismiss_presses_hint')}
+                  >
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={0}
+                      max={20}
+                      value={requeue.max_dismiss_presses}
+                      onChange={(e) =>
+                        setRequeueField({
+                          max_dismiss_presses: Math.min(
+                            20,
+                            Math.max(0, Math.trunc(Number(e.target.value) || 0)),
+                          ),
+                        })
+                      }
+                    />
+                  </Field>
+                </div>
+              </details>
+            </>
+          )}
+        </div>
       </CardContent>
     </Card>
   )
+}
+
+/** Mirror of `RandomDelayConfig::default()` on the Rust side. */
+function defaultRandomDelayConfig(): RandomDelayConfig {
+  return {
+    enabled: false,
+    min_ms: 0,
+    max_ms: 3000,
+    exclude_chi_pon: true,
+  }
+}
+
+/** A list of `[x, y]` coordinate pairs, edited as rows. Used for the
+ *  requeue module's extra dismiss buttons (the client's event notice and
+ *  "item received" panels), whose positions are not the confirm button's. */
+function PointListField({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string
+  hint?: string
+  value: [number, number][]
+  onChange: (v: [number, number][]) => void
+}) {
+  const { t } = useTranslation()
+  const update = (i: number, axis: 0 | 1, raw: string) => {
+    const n = Number(raw)
+    const next: [number, number][] = value.map((p, j) =>
+      j === i
+        ? (axis === 0
+            ? [Number.isFinite(n) ? n : 0, p[1]]
+            : [p[0], Number.isFinite(n) ? n : 0]
+          ) as [number, number]
+        : p,
+    )
+    onChange(next)
+  }
+  return (
+    <div className="grid gap-2">
+      <Label>{label}</Label>
+      {value.map((p, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <Input
+            type="number"
+            inputMode="decimal"
+            step={0.01}
+            aria-label={`${label} X ${i + 1}`}
+            className="max-w-[9rem] font-mono"
+            value={p[0]}
+            onChange={(e) => update(i, 0, e.target.value)}
+          />
+          <Input
+            type="number"
+            inputMode="decimal"
+            step={0.01}
+            aria-label={`${label} Y ${i + 1}`}
+            className="max-w-[9rem] font-mono"
+            value={p[1]}
+            onChange={(e) => update(i, 1, e.target.value)}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="shrink-0 text-red-400 hover:text-red-400"
+            onClick={() => onChange(value.filter((_, j) => j !== i))}
+            title={t('common.delete')}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      ))}
+      <div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() => onChange([...value, [0, 0]])}
+        >
+          <Plus className="h-4 w-4" />
+          {t('settings.autoplay.requeue_extra_buttons_add')}
+        </Button>
+      </div>
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+    </div>
+  )
+}
+
+/** The 再來一場 control on the reward panel, measured against the live
+ *  client — the blue button right next to 確定. */
+const DEFAULT_QUEUE_BUTTON: [number, number] = [12.23, 8.34]
+
+/** The 確定 inside the dialog that 再來一場 opens — the button that actually
+ *  asks for the next match. Measured against the live client: the dialog is
+ *  centred, its 確定 is the gold plate on the left. */
+const DEFAULT_QUEUE_DIALOG_CONFIRM: [number, number] = [6.58, 6.71]
+
+/** The 匹配對局 control on the match-preparation screen — the rule card for
+ *  the next game with the big orange button under it. Measured against the
+ *  live client. */
+const DEFAULT_MATCH_BUTTON: [number, number] = [10.87, 7.10]
+
+/** The live plan, as the backend sees it: how many games are done and how
+ *  many are left. The field above is the *draft* — what a save would
+ *  write — while this is what is running right now. The counter only
+ *  restarts when the button here is pressed; changing the limit never
+ *  restarts it by itself. */
+function RequeuePlanSummary() {
+  const { t } = useTranslation()
+  const [plan, refresh] = useRequeueStatus(true)
+
+  if (!plan) return null
+
+  const status =
+    plan.remaining == null
+      ? t('settings.autoplay.requeue_plan_unlimited', { games: plan.games })
+      : plan.remaining === 0
+        ? t('settings.autoplay.requeue_plan_exhausted', { games: plan.games })
+        : t('settings.autoplay.requeue_plan_status', {
+            games: plan.games,
+            remaining: plan.remaining,
+          })
+
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5">
+      <span className="text-xs tabular-nums text-muted-foreground">{status}</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          void invoke('reset_requeue_counter')
+            .then(() => refresh())
+            .catch(() => {})
+        }}
+      >
+        {t('settings.autoplay.requeue_plan_reset')}
+      </Button>
+    </div>
+  )
+}
+
+/** Mirror of `RequeueConfig::default()` on the Rust side. */
+function defaultRequeueConfig(): RequeueConfig {
+  return {
+    enabled: false,
+    max_games: 0,
+    stop_at: '',
+    // Every coordinate measured against the live client: 確定 at the
+    // bottom right of every result screen, 再來一場 right next to it on
+    // the reward panel, the dialog's 確定 in the middle, and 匹配對局 on
+    // the match-preparation screen.
+    result_confirm: [14.59, 8.37],
+    queue_button: [12.23, 8.34],
+    queue_dialog_confirm: [6.58, 6.71],
+    match_button: [10.87, 7.10],
+    extra_buttons: [],
+    max_confirm_presses: 18,
+    max_dismiss_presses: 8,
+    result_delay_ms: 2000,
+    step_wait_ms: 1000,
+    between_press_delay_ms: 0,
+    queue_confirm_timeout_ms: 2500,
+    hover_delay_ms: 400,
+    click_hold_ms: 300,
+  }
 }
 
 /** Mirror of `DelayModelConfig::default()` on the Rust side. */

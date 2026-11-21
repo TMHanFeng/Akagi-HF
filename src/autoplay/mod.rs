@@ -54,6 +54,10 @@
 //!   tell a click that registered from one the UI swallowed, and retry.
 //!   Canvas clicks only — the Tenhou steps run the client's own handlers,
 //!   which report their own failure.
+//! - [`lobby_watch`] — did the client leave the result screen? Counts the
+//!   lobby-bound requests the client sends on its own initiative, so the
+//!   "play again" loop ([`requeue`]) can tell a press that landed from one
+//!   the UI swallowed, without reading the canvas.
 //! - [`delay`] — how long a decision appears to take, shared by every
 //!   platform. Its inputs besides the decision itself: [`table`] (facts read
 //!   off the table — loose tile, safe against every riichi) and [`advisor`]
@@ -68,9 +72,12 @@ pub mod cdp_input;
 pub mod context;
 pub mod delay;
 pub mod inject;
+pub mod lobby_watch;
 pub mod majsoul;
 pub mod manager;
 pub mod platform;
+pub mod plan;
+pub mod requeue;
 pub mod riichi_city;
 pub mod table;
 pub mod tenhou;
@@ -79,6 +86,8 @@ pub mod verify;
 
 pub use budget::{BudgetSource, SharedTimeBudget, TimeBudget};
 pub use context::{AutoplayContext, CanvasRect};
+pub use lobby_watch::{LobbyTicket, LobbyWatch, SharedLobbyWatch};
 pub use manager::run_autoplay_manager;
 pub use platform::{ActionContext, PlanResult, PlatformAutoplay, Step};
+pub use plan::{PlanState, RequeueStatus, SharedPlan};
 pub use verify::{InputKind, InputWatch, SharedInputWatch};

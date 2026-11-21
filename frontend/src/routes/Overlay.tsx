@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { X } from 'lucide-react'
 import { BotShowList } from '@/components/BotShowList'
+import { RequeuePlanBar } from '@/components/RequeuePlanBar'
 import { pickShow, visibleItems } from '@/lib/botShow'
 import { invoke, listen } from '@/lib/tauri'
 import type { AppConfig, BotResponse, OverlayConfig, ShowMeta } from '@/types'
@@ -29,6 +30,9 @@ export function Overlay() {
   const { t } = useTranslation()
   const [show, setShow] = useState<ShowMeta | null>(null)
   const [cfg, setCfg] = useState<OverlayConfig>(FALLBACK)
+  // Whether the requeue module is on. The plan row only makes sense while
+  // the module can actually start the next game.
+  const [requeueOn, setRequeueOn] = useState(false)
 
   useEffect(() => {
     const unlistens: Array<() => void> = []
@@ -38,7 +42,9 @@ export function Overlay() {
     // `overlay-config` keeps us in step with later edits in Settings.
     invoke<AppConfig>('get_config')
       .then((c) => {
-        if (!cancelled) setCfg(c.overlay)
+        if (cancelled) return
+        setCfg(c.overlay)
+        setRequeueOn(c.autoplay?.requeue?.enabled === true)
       })
       .catch(() => {
         /* keep the fallback — a blank overlay would be worse than a default one */
@@ -106,6 +112,12 @@ export function Overlay() {
             <BotShowList items={items} variant="overlay" />
           )}
         </div>
+
+        {/* The play plan: how many games are left, a one-click "stop after
+            the game in play" and the daily cutoff. It changes the plan while
+            the bot is running — nothing restarts, and the game in play is
+            always finished. */}
+        <RequeuePlanBar enabled={requeueOn} />
       </div>
     </div>
   )

@@ -56,13 +56,18 @@ const CHROME_HEIGHT: f64 = 48.0;
 const MIN_ROW_HEIGHT: f64 = 34.0;
 /// Roomy enough that the tile is worth glancing at without leaning in.
 const DEFAULT_ROW_HEIGHT: f64 = 62.0;
+/// The play-plan row under the list (the counter, "stop after this game" and
+/// the daily cutoff). It is chrome, not a suggestion row, so it is added on
+/// top of the row budget rather than taken out of it — otherwise the rows
+/// would be squeezed by a control strip that has nothing to do with them.
+const PLAN_BAR_HEIGHT: f64 = 26.0;
 
 fn default_height(top_n: usize) -> f64 {
-    CHROME_HEIGHT + top_n as f64 * DEFAULT_ROW_HEIGHT
+    CHROME_HEIGHT + PLAN_BAR_HEIGHT + top_n as f64 * DEFAULT_ROW_HEIGHT
 }
 
 fn min_height(top_n: usize) -> f64 {
-    CHROME_HEIGHT + top_n as f64 * MIN_ROW_HEIGHT
+    CHROME_HEIGHT + PLAN_BAR_HEIGHT + top_n as f64 * MIN_ROW_HEIGHT
 }
 
 pub fn get<R: Runtime>(app: &AppHandle<R>) -> Option<WebviewWindow<R>> {
@@ -185,10 +190,24 @@ mod tests {
     #[test]
     fn floor_leaves_every_row_its_minimum() {
         for n in TOP_N_MIN..=TOP_N_MAX {
-            let per_row = (min_height(n) - CHROME_HEIGHT) / n as f64;
+            let per_row = (min_height(n) - CHROME_HEIGHT - PLAN_BAR_HEIGHT) / n as f64;
             assert!(
                 per_row >= MIN_ROW_HEIGHT,
                 "{n} rows get {per_row}px each, below the {MIN_ROW_HEIGHT}px minimum"
+            );
+        }
+    }
+
+    /// The play-plan row is chrome, not a suggestion row: it must not eat
+    /// into the rows' height budget.
+    #[test]
+    fn the_plan_bar_does_not_squeeze_the_rows() {
+        for n in TOP_N_MIN..=TOP_N_MAX {
+            let rows_only = min_height(n) - CHROME_HEIGHT - PLAN_BAR_HEIGHT;
+            assert!(
+                rows_only >= n as f64 * MIN_ROW_HEIGHT,
+                "{n} rows get {rows_only}px, below the {} they need",
+                n as f64 * MIN_ROW_HEIGHT
             );
         }
     }

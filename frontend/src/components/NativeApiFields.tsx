@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   CheckCircle2,
@@ -18,6 +18,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -114,6 +121,18 @@ export function NativeApiFields({
     setModels(list)
     return list
   }
+
+  // A key that was ALREADY configured when this screen opened means the
+  // models can be listed without the user asking for it: fetch them once so
+  // the dropdowns are populated straight away. Deliberately keyed on the
+  // mount state only — a key typed in afterwards is adopted by `adoptKey`,
+  // which queries the server itself, and asking twice would race it.
+  const mountState = useRef({ enabled: value.enabled, hasUrlKey })
+  useEffect(() => {
+    const { enabled, hasUrlKey: hasKey } = mountState.current
+    if (!enabled || !hasKey) return
+    void queryModels(valueRef.current).catch((e) => setErr(String(e)))
+  }, [])
 
   /**
    * A complete key was typed or pasted. Take it from there: ask the server what
@@ -423,52 +442,27 @@ export function NativeApiFields({
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="grid gap-1.5">
-            <Label>{t('bots.api.model_4p')}</Label>
-            <Input
-              value={value.model_4p}
-              onChange={(e) => set({ model_4p: e.target.value })}
-              placeholder="4p-model"
-              autoComplete="off"
-              spellCheck={false}
-              className="font-mono"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label>{t('bots.api.model_3p')}</Label>
-            <Input
-              value={value.model_3p}
-              onChange={(e) => set({ model_3p: e.target.value })}
-              placeholder="3p-model"
-              autoComplete="off"
-              spellCheck={false}
-              className="font-mono"
-            />
-          </div>
+          <ModelPicker
+            label={t('bots.api.model_4p')}
+            models={models}
+            game="4p"
+            value={value.model_4p}
+            placeholder="4p-model"
+            onChange={(id) => set({ model_4p: id })}
+          />
+          <ModelPicker
+            label={t('bots.api.model_3p')}
+            models={models}
+            game="3p"
+            value={value.model_3p}
+            placeholder="3p-model"
+            onChange={(id) => set({ model_3p: id })}
+          />
         </div>
         <span className="text-xs text-muted-foreground -mt-2">{t('bots.api.model_hint')}</span>
 
-        {models && (
-          <div className="grid gap-1.5">
-            <Label className="text-xs text-muted-foreground">{t('bots.api.models_title')}</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {models.length === 0 && (
-                <span className="text-xs text-muted-foreground">{t('bots.api.models_empty')}</span>
-              )}
-              {models.map((m) => (
-                <Button
-                  key={m.id}
-                  size="sm"
-                  variant="secondary"
-                  className="h-7 font-mono text-xs"
-                  title={m.desc}
-                  onClick={() => set(m.game === '3p' ? { model_3p: m.id } : { model_4p: m.id })}
-                >
-                  {m.id}
-                </Button>
-              ))}
-            </div>
-          </div>
+        {models && models.length === 0 && (
+          <span className="text-xs text-muted-foreground">{t('bots.api.models_empty')}</span>
         )}
 
         {status && (
@@ -543,6 +537,82 @@ export function NativeApiFields({
           onNewKey={(key) => void adoptNewKey(key)}
         />
       )}
+    </div>
+  )
+}
+
+/** Radix refuses an empty-string item value, so "let the server pick" is
+ *  a sentinel rather than an empty id. */
+const SERVER_DEFAULT = '__server_default__'
+
+/**
+ * One mode's model picker: a dropdown of the models the key may use,
+ * with a free-text fallback for when the list isn't known yet (no key
+ * entered, or the server could not be reached). The configured id is
+ * always offered — a model the server stopped advertising must stay
+ * visible instead of silently switching to another one.
+ */
+function ModelPicker({
+  label,
+  models,
+  game,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string
+  models: ModelInfo[] | null
+  game: '4p' | '3p'
+  value: string
+  placeholder: string
+  onChange: (id: string) => void
+}) {
+  const { t } = useTranslation()
+  const options = useMemo(() => {
+    const offered = (models ?? []).filter((m) => m.game === game)
+    if (value && !offered.some((m) => m.id === value)) {
+      return [{ id: value, game, desc: '' }, ...offered]
+    }
+    return offered
+  }, [models, game, value])
+
+  // Nothing to choose from — keep the id editable so a model can still
+  // be named by hand.
+  if (!models || options.length === 0) {
+    return (
+      <div className="grid gap-1.5">
+        <Label>{label}</Label>
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          autoComplete="off"
+          spellCheck={false}
+          className="font-mono"
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid gap-1.5">
+      <Label>{label}</Label>
+      <Select
+        value={value || SERVER_DEFAULT}
+        onValueChange={(v) => onChange(v === SERVER_DEFAULT ? '' : v)}
+      >
+        <SelectTrigger className="w-full font-mono">
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SERVER_DEFAULT}>{t('bots.api.model_server_default')}</SelectItem>
+          {options.map((m) => (
+            <SelectItem key={m.id} value={m.id}>
+              {m.desc ? `${m.id} — ${m.desc}` : m.id}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   )
 }

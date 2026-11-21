@@ -39,6 +39,7 @@ struct RemoteDebuggingConfig {
 
 pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<SpawnedChromium> {
     let remote_debugging = remote_debugging_config(&cfg.extra_args)?;
+    let (features, extra_args) = merged_disable_features(&cfg.extra_args);
     let mut cmd = Command::new(exe);
     cmd.arg(format!("--user-data-dir={}", profile.display()));
     if let Some(arg) = &remote_debugging.arg {
@@ -46,7 +47,6 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
     }
     cmd.arg("--no-first-run")
         .arg("--no-default-browser-check")
-        .arg("--disable-features=TranslateUI,InterestFeedContentSuggestions")
         .arg("--disable-search-engine-choice-screen")
         .arg("--disable-component-update")
         .arg("--disable-background-networking")
@@ -57,9 +57,13 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
         // Chromium occasionally crashes on Linux when /dev/shm is small (e.g. Docker).
         cmd.arg("--disable-dev-shm-usage");
     }
-    for extra in &cfg.extra_args {
+    for extra in &extra_args {
         cmd.arg(extra);
     }
+    // Chromium reads only the **last** `--disable-features` on the command
+    // line, so this one goes last and carries the built-in list merged with
+    // the user's own. See `merged_disable_features`.
+    cmd.arg(format!("--disable-features={}", features.join(",")));
     if !cfg.start_url.is_empty() {
         cmd.arg(&cfg.start_url);
     }
@@ -93,6 +97,56 @@ pub fn spawn(exe: &Path, profile: &Path, cfg: &ChromiumConfig) -> Result<Spawned
         child,
         remote_debugging_port: remote_debugging.port,
     })
+}
+
+/// Merge Chromium's `--disable-features` lists.
+///
+/// Chromium reads only the **last** `--disable-features` argument on the
+/// command line — the earlier ones are silently dropped. So Akagi's own
+/// list and the user's `extra_args` list have to end up in one argument,
+/// or the user's addition quietly switches Akagi's back on.
+///
+/// Returns the merged feature list and the `extra_args` with every
+/// `--disable-features` argument taken out of it.
+fn merged_disable_features(extra_args: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut features: Vec<String> = vec![
+        "TranslateUI".to_string(),
+        "InterestFeedContentSuggestions".to_string(),
+    ];
+    let mut rest: Vec<String> = Vec::with_capacity(extra_args.len());
+
+    let mut i = 0usize;
+    while i < extra_args.len() {
+        let arg = &extra_args[i];
+        if let Some(value) = arg.strip_prefix("--disable-features=") {
+            push_features(&mut features, value);
+            i += 1;
+            continue;
+        }
+        if arg == "--disable-features" {
+            // the separated form: the value is the next argument
+            if let Some(value) = extra_args.get(i + 1) {
+                push_features(&mut features, value);
+                i += 2;
+                continue;
+            }
+        }
+        rest.push(arg.clone());
+        i += 1;
+    }
+
+    (features, rest)
+}
+
+/// Add a comma-separated feature list to `features`, keeping the order
+/// and dropping duplicates.
+fn push_features(features: &mut Vec<String>, value: &str) {
+    for feature in value.split(',') {
+        let feature = feature.trim();
+        if !feature.is_empty() && !features.iter().any(|f| f == feature) {
+            features.push(feature.to_string());
+        }
+    }
 }
 
 fn remote_debugging_config(extra_args: &[String]) -> Result<RemoteDebuggingConfig> {
@@ -563,5 +617,74 @@ mod tests {
     #[test]
     fn rejects_garbage_port() {
         assert!(parse_devtools_port("not-a-port\n/path\n").is_none());
+    }
+
+    /// Chromium reads only the last `--disable-features`, so the built-in
+    /// list and the user's have to end up in one argument.
+    #[test]
+    fn the_users_disable_features_join_the_built_in_ones() {
+        let extra = vec![
+            "--disable-features=CalculateNativeWinOcclusion".to_string(),
+            "--disable-backgrounding-occluded-windows".to_string(),
+        ];
+        let (features, rest) = merged_disable_features(&extra);
+        assert_eq!(
+            features,
+            vec![
+                "TranslateUI",
+                "InterestFeedContentSuggestions",
+                "CalculateNativeWinOcclusion",
+            ]
+        );
+        assert_eq!(rest, vec!["--disable-backgrounding-occluded-windows"]);
+    }
+
+    /// The separated form (`--disable-features <value>`) has to be
+    /// recognised too, and its value must not stay in the rest.
+    #[test]
+    fn the_separated_disable_features_form_is_merged_as_well() {
+        let extra = vec![
+            "--disable-features".to_string(),
+            "CalculateNativeWinOcclusion,IntensiveWakeUpThrottling".to_string(),
+            "--no-pings".to_string(),
+        ];
+        let (features, rest) = merged_disable_features(&extra);
+        assert_eq!(
+            features,
+            vec![
+                "TranslateUI",
+                "InterestFeedContentSuggestions",
+                "CalculateNativeWinOcclusion",
+                "IntensiveWakeUpThrottling",
+            ]
+        );
+        assert_eq!(rest, vec!["--no-pings"]);
+    }
+
+    /// Without any user argument the built-in list is untouched.
+    #[test]
+    fn the_built_in_features_are_kept_when_the_user_adds_none() {
+        let (features, rest) = merged_disable_features(&[]);
+        assert_eq!(features, vec!["TranslateUI", "InterestFeedContentSuggestions"]);
+        assert!(rest.is_empty());
+    }
+
+    /// A feature the user names twice — or one the built-in list already
+    /// has — must not appear twice.
+    #[test]
+    fn duplicate_features_are_collapsed() {
+        let extra = vec![
+            "--disable-features=TranslateUI,CalculateNativeWinOcclusion".to_string(),
+            "--disable-features=CalculateNativeWinOcclusion".to_string(),
+        ];
+        let (features, _) = merged_disable_features(&extra);
+        assert_eq!(
+            features,
+            vec![
+                "TranslateUI",
+                "InterestFeedContentSuggestions",
+                "CalculateNativeWinOcclusion",
+            ]
+        );
     }
 }

@@ -366,4 +366,31 @@ delay.some_future_knob = 1
     fn invalid_existing_document_is_an_error() {
         assert!(merge_into(&cfg(), "this is not = = toml").is_err());
     }
+
+    /// A field cleared to its empty value must overwrite what was in the
+    /// file. The config is *merged*, not rewritten, and a `None` is not
+    /// written at all — so a field that is an `Option` can never be
+    /// cleared: the old value simply stays and comes back on the next
+    /// start. This is why the play plan's cutoff is a plain string with
+    /// "" meaning "not set".
+    #[test]
+    fn an_empty_value_overwrites_the_one_in_the_file() {
+        let existing = "\
+[autoplay.requeue]
+max_games = 20
+stop_at = \"23:30\"
+";
+        let mut cfg = AppConfig::default();
+        cfg.autoplay.requeue.max_games = 20;
+        cfg.autoplay.requeue.stop_at = String::new();
+
+        let out = merge_into(&cfg, existing).unwrap();
+        let back: AppConfig = toml::from_str(&out).unwrap();
+
+        assert_eq!(back.autoplay.requeue.stop_at, "");
+        assert!(
+            !out.contains("23:30"),
+            "the old cutoff survived the clear:\n{out}"
+        );
+    }
 }

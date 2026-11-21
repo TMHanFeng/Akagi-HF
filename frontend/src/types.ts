@@ -102,6 +102,22 @@ export type PlatformKind = 'Majsoul' | 'Tenhou' | 'RiichiCity'
  *  `src/config/range.rs::MsRange`; every decision draws one value from it. */
 export type MsRange = [number, number]
 
+/** An extra random delay on top of the delay model's target. Mirrors
+ *  `src/config/autoplay.rs::RandomDelayConfig`. */
+export type RandomDelayConfig = {
+  /** Master switch. Off by default — the delay model already paces the
+   *  clicks; this adds a second, independent draw on top of it. */
+  enabled: boolean
+  /** Lower bound of the extra delay, ms; the draw is uniform in
+   *  `[min_ms, max_ms]`. */
+  min_ms: number
+  /** Upper bound of the extra delay, ms. */
+  max_ms: number
+  /** Skip chi and pon decisions: their reaction window is short and a
+   *  late claim is simply lost. On by default. */
+  exclude_chi_pon: boolean
+}
+
 export type MajsoulAutoplayConfig = {
   pre_click_delay_min_ms: number
   pre_click_delay_max_ms: number
@@ -116,6 +132,8 @@ export type MajsoulAutoplayConfig = {
   /** Reload the game page after this many dead decisions in a row; 0 = off. */
   reload_after_failures: number
   dealer_first_discard_extra_delay_ms: MsRange
+  /** Absent in a config written before the module existed. */
+  random_delay?: RandomDelayConfig
 }
 
 /** Pre-click delay model parameters. Mirrors
@@ -149,10 +167,77 @@ export type DelayModelConfig = {
   no_budget_cap_ms: number
 }
 
+/** Automatic "play again" after a game ends. Mirrors
+ *  `src/config/autoplay.rs::RequeueConfig`. */
+export type RequeueConfig = {
+  enabled: boolean
+  /** Stop after this many finished games; 0 = never stop. A budget for the
+   * whole run — changing it does not restart the counter. */
+  max_games: number
+  /** A daily wall-clock cutoff, `HH:MM` local time, after which no new game
+   * is started; an empty string = no cutoff. The game in play is always
+   * finished. */
+  stop_at: string
+  /** The 確定 control on the result and reward screens, 16:9-normalised. */
+  result_confirm: [number, number]
+  /** The 再來一場 control on the reward panel, 16:9-normalised; `null`
+   *  leaves the client in the lobby and the user queues the next game by
+   *  hand. */
+  queue_button: [number, number] | null
+  /** The 確定 control *inside* the dialog that 再來一場 opens,
+   *  16:9-normalised. Pressing 再來一場 sends nothing — it only opens the
+   *  confirmation dialog — and this is the button that actually asks for the
+   *  next match. */
+  queue_dialog_confirm: [number, number]
+  /** The 匹配對局 control on the match-preparation screen, 16:9-normalised;
+   *  `null` leaves it to the user. This is the loop's last resort: by the
+   *  time the client stands on that screen the 再來一場 control is gone,
+   *  and this button asks for a match on the spot — no dialog. */
+  match_button: [number, number] | null
+  /** Extra dismiss buttons, 16:9-normalised — one `[x, y]` per entry. The
+   *  client pops event notices and "item received" panels between the
+   *  result screen and the lobby; they send no protocol message, so only a
+   *  click gets past them. The loop tries these alongside the primary
+   *  buttons and stops as soon as the client answers on the wire. */
+  extra_buttons: [number, number][]
+  /** How many presses the whole loop may make. */
+  max_confirm_presses: number
+  /** How many of those presses may land on the 確定 control. `0` means no
+   *  separate limit. */
+  max_dismiss_presses: number
+  result_delay_ms: number
+  /** How long to wait after a press before the next one — the settle time
+   *  for the client's screen animation. */
+  step_wait_ms: number
+  between_press_delay_ms: number
+  /** How long to watch the wire after a press before trying the next
+   *  control. */
+  queue_confirm_timeout_ms: number
+  hover_delay_ms: number
+  click_hold_ms: number
+}
+
 export type AutoplayConfig = {
   enabled: boolean
   majsoul: MajsoulAutoplayConfig
   delay: DelayModelConfig
+  /** Absent in a config written before the requeue module existed. */
+  requeue?: RequeueConfig
+}
+
+/** The live play plan, as the backend reports it. Mirrors
+ * `crate::autoplay::plan::RequeueStatus`. */
+export type RequeueStatus = {
+  /** Games finished since the counter was last reset. */
+  games: number
+  /** The game budget; 0 = unlimited. */
+  max_games: number
+  /** Games left before the budget stops the loop; `null` = unlimited. */
+  remaining: number | null
+  /** The daily cutoff, `HH:MM`; `null` = no cutoff. */
+  stop_at: string | null
+  /** Whether the cutoff has already passed today. */
+  deadline_passed: boolean
 }
 
 /** Optional cloud-inference settings for the built-in native bot.

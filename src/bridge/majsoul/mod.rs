@@ -43,6 +43,25 @@ const METHOD_SYNC_GAME: &str = ".lq.FastTest.syncGame";
 /// can tell a click that registered from one the UI swallowed.
 const METHOD_INPUT_OPERATION: &str = ".lq.FastTest.inputOperation";
 const METHOD_INPUT_CHI_PENG_GANG: &str = ".lq.FastTest.inputChiPengGang";
+/// The client sent this when it confirmed the *new* round — the readiness
+/// check that comes with a match, not the dismissal of the old one's result
+/// screens (see `autoplay::lobby_watch`).
+const METHOD_CONFIRM_NEW_ROUND: &str = ".lq.FastTest.confirmNewRound";
+/// The client sent this when it asked to enter a match. Also the proof that
+/// the lobby's queue button was pressed.
+const METHOD_START_UNIFIED_MATCH: &str = ".lq.Lobby.startUnifiedMatch";
+/// The client changes its route when it moves between the lobby, the
+/// rank-match lobby, the match preparation and the table itself.
+///
+/// The route id is what tells them apart: `route-4` is the lobby,
+/// `route-2` the rank-match lobby, `route-3` the match preparation and
+/// `route-5` the table. Measured on the live client.
+const METHOD_ROUTE_REQUEST_ROUTE_CHANGE: &str = ".lq.Route.requestRouteChange";
+/// The lobby's own route id.
+const ROUTE_LOBBY: &str = "route-4";
+/// The match-preparation route id. The client switches to it right after
+/// the 再來一場 press opens its dialog.
+const ROUTE_MATCH_PREP: &str = "route-3";
 /// `timeuse` the client stamps on an action it took by itself rather than
 /// on one the player made — a decision window that ran out, or an auto
 /// setting. Observed as exactly this value on both input methods.
@@ -196,6 +215,11 @@ pub struct MajsoulBridge {
     /// autoplay manager for click verification (see `autoplay::verify`).
     /// `None` when the autoplay context isn't wired (MITM path, tests).
     input_watch: Option<crate::autoplay::verify::SharedInputWatch>,
+    /// Counter of the client's own lobby-bound requests, shared with the
+    /// requeue loop so it can tell a press on the result screen from a
+    /// press the UI swallowed (see `autoplay::lobby_watch`).
+    /// `None` when the autoplay context isn't wired (MITM path, tests).
+    lobby_watch: Option<crate::autoplay::lobby_watch::SharedLobbyWatch>,
 }
 
 impl MajsoulBridge {
@@ -219,6 +243,7 @@ impl MajsoulBridge {
             replaying: false,
             restore_budget: None,
             input_watch: None,
+            lobby_watch: None,
         }
     }
 
@@ -236,6 +261,16 @@ impl MajsoulBridge {
         watch: Option<crate::autoplay::verify::SharedInputWatch>,
     ) -> Self {
         self.input_watch = watch;
+        self
+    }
+
+    /// Install the shared lobby-request counter (builder-style; used by
+    /// `bridge::for_platform`).
+    pub fn with_lobby_watch(
+        mut self,
+        watch: Option<crate::autoplay::lobby_watch::SharedLobbyWatch>,
+    ) -> Self {
+        self.lobby_watch = watch;
         self
     }
 
@@ -313,6 +348,58 @@ impl MajsoulBridge {
                     if is_client_initiated(&msg.payload) {
                         watch.note_sent(input_kind(msg.method_name.as_ref(), &msg.payload));
                     }
+                }
+                Vec::new()
+            }
+            // The client leaves the result screens and enters a match on its
+            // own initiative — the proof that the corresponding click
+            // landed. No mjai event comes of them.
+            (MessageType::Request, METHOD_CONFIRM_NEW_ROUND) => {
+                if let Some(watch) = &self.lobby_watch {
+                    watch.note_confirm_new_round();
+                }
+                Vec::new()
+            }
+            // The client changes its route when it moves between the screens
+            // the lobby side owns — the 大厅, the match preparation, the
+            // table. The route id is what says *which* screen it landed
+            // on.
+            //
+            // The lobby's own data fetch (`fetchAccountInfo`) used to be
+            // used here, and that was wrong: measured on the live client it
+            // fires about 24 seconds after a game ends — while the result
+            // screens are still up — because the lobby side refreshes the
+            // account (the rank changed). It says nothing about the client
+            // being in the lobby. The route change says it exactly.
+            //
+            // `route-3` is the match preparation, and it arrives right
+            // after the 再來一場 press — in the same breath as the dialog
+            // that press opens. That makes it the loop's proof that the
+            // dialog is up.
+            //
+            // `route-4` is the lobby. It is weaker than it looks: the
+            // client reloads the lobby route on its own schedule, and the
+            // measurement caught it doing so during a game and 3 m 38 s
+            // after the client had been left on the match-preparation
+            // screen. It is a safety stop for the loop, not a step in its
+            // plan.
+            (MessageType::Request, METHOD_ROUTE_REQUEST_ROUTE_CHANGE) => {
+                if let Some(watch) = &self.lobby_watch {
+                    match msg
+                        .payload
+                        .get("route_id")
+                        .and_then(JsonValue::as_str)
+                    {
+                        Some(ROUTE_MATCH_PREP) => watch.note_match_prepared(),
+                        Some(ROUTE_LOBBY) => watch.note_lobby_entered(),
+                        _ => {}
+                    }
+                }
+                Vec::new()
+            }
+            (MessageType::Request, METHOD_START_UNIFIED_MATCH) => {
+                if let Some(watch) = &self.lobby_watch {
+                    watch.note_start_unified_match();
                 }
                 Vec::new()
             }

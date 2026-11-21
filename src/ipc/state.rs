@@ -121,6 +121,12 @@ pub struct AppState {
     /// process. Used by `update_config` to start the manager on a
     /// runtime false→true flip of `autoplay.enabled` without re-spawning.
     pub autoplay_manager_started: Arc<AtomicBool>,
+    /// The play plan's counter — how many games the requeue loop has
+    /// finished. Written by the `AutoplayManager` after every game and
+    /// read by the `get_requeue_status` command, so the Settings page and
+    /// the overlay can show "已打 N / 还剩 M" and change the plan while it
+    /// runs. See `crate::autoplay::plan`.
+    pub requeue_plan: crate::autoplay::plan::SharedPlan,
     /// Serialises in-app update operations. `check_for_update` and
     /// `apply_update` both `try_lock()` it so the user mashing buttons
     /// can't race two HTTP fetches or — worse — two binary swaps.
@@ -176,6 +182,9 @@ impl AppState {
             bot_manager_started: Arc::new(AtomicBool::new(false)),
             autoplay_context: Arc::new(AutoplayContext::new()),
             autoplay_manager_started: Arc::new(AtomicBool::new(false)),
+            requeue_plan: Arc::new(Mutex::new(
+                crate::autoplay::plan::PlanState::default(),
+            )),
             updater_lock: Arc::new(Mutex::new(())),
             pending_update: Arc::new(RwLock::new(None)),
         }

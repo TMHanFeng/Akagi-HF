@@ -296,6 +296,7 @@ pub fn run() {
                     state
                         .autoplay_manager_started
                         .store(true, std::sync::atomic::Ordering::SeqCst);
+                    let plan_for_ap = state.requeue_plan.clone();
                     tauri::async_runtime::spawn(async move {
                         if let Err(e) = autoplay::run_autoplay_manager(
                             cfg_for_ap,
@@ -305,6 +306,7 @@ pub fn run() {
                             resp_for_ap,
                             notify_for_ap,
                             config_dir_for_ap,
+                            plan_for_ap,
                         )
                         .await
                         {
