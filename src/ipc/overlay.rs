@@ -56,11 +56,16 @@ const CHROME_HEIGHT: f64 = 48.0;
 const MIN_ROW_HEIGHT: f64 = 34.0;
 /// Roomy enough that the tile is worth glancing at without leaning in.
 const DEFAULT_ROW_HEIGHT: f64 = 62.0;
-/// The play-plan row under the list (the counter, "stop after this game" and
-/// the daily cutoff). It is chrome, not a suggestion row, so it is added on
-/// top of the row budget rather than taken out of it — otherwise the rows
-/// would be squeezed by a control strip that has nothing to do with them.
-const PLAN_BAR_HEIGHT: f64 = 26.0;
+/// The play-plan strip under the list (the counter, "stop after this game",
+/// the deadline's day offset and its clock). It is chrome, not a suggestion
+/// row, so it is added on top of the row budget rather than taken out of it —
+/// otherwise the rows would be squeezed by a control strip that has nothing
+/// to do with them.
+///
+/// The strip is two rows tall (status + "stop", then the knobs), so it needs
+/// room for both: two 18px controls, the gap between them and the padding
+/// around them.
+const PLAN_BAR_HEIGHT: f64 = 50.0;
 
 fn default_height(top_n: usize) -> f64 {
     CHROME_HEIGHT + PLAN_BAR_HEIGHT + top_n as f64 * DEFAULT_ROW_HEIGHT

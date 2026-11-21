@@ -75,15 +75,16 @@ pub struct RequeueConfig {
     /// running either way (see `autoplay::plan`). The counter only restarts
     /// when the user asks for it explicitly.
     pub max_games: u32,
-    /// A daily wall-clock cutoff, `HH:MM` local time, after which no new
-    /// game is started. An empty string means no cutoff.
+    /// An absolute deadline, `YYYY-MM-DDTHH:MM` local time, after which no
+    /// new game is started. An empty string means no deadline.
     ///
-    /// The game in play is always finished — the cutoff applies to the
-    /// *next* one. It is a moment of the day, not a duration: a cutoff of
-    /// `03:00` set at one in the morning means "play until three", and the
-    /// same value set at ten in the morning means "nothing new after
-    /// three". An unparseable value is ignored (with a warning in the log)
-    /// rather than stopping the bot.
+    /// The game in play is always finished — the deadline applies to the
+    /// *next* one. It is an absolute moment rather than a daily rule, and
+    /// that is deliberate: a deadline that re-derived itself from "now" on
+    /// every read would keep moving and the bot would never stop. The UI
+    /// shows it as a clock plus the number of days left, and that number is
+    /// derived from the stored date — so on the third of the month a
+    /// deadline set for the fifth shows as "还差 2 天".
     ///
     /// A plain string rather than an `Option`: the config file is written
     /// by *merging* into whatever is already on disk, and a `None` is

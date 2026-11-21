@@ -174,9 +174,9 @@ export type RequeueConfig = {
   /** Stop after this many finished games; 0 = never stop. A budget for the
    * whole run — changing it does not restart the counter. */
   max_games: number
-  /** A daily wall-clock cutoff, `HH:MM` local time, after which no new game
-   * is started; an empty string = no cutoff. The game in play is always
-   * finished. */
+  /** An absolute deadline, `YYYY-MM-DDTHH:MM` local time, after which no new
+   * game is started; an empty string = no deadline. The game in play is
+   * always played to the end. */
   stop_at: string
   /** The 確定 control on the result and reward screens, 16:9-normalised. */
   result_confirm: [number, number]
@@ -234,9 +234,15 @@ export type RequeueStatus = {
   max_games: number
   /** Games left before the budget stops the loop; `null` = unlimited. */
   remaining: number | null
-  /** The daily cutoff, `HH:MM`; `null` = no cutoff. */
+  /** The deadline as it is stored: an absolute `YYYY-MM-DDTHH:MM` local
+   * moment; `null` = no deadline. */
   stop_at: string | null
-  /** Whether the cutoff has already passed today. */
+  /** The deadline's clock, `HH:MM` — what the time field shows. */
+  stop_clock: string | null
+  /** Days from today to the deadline: `0` = today, `1` = tomorrow. Negative
+   * when the deadline has passed. */
+  stop_days: number | null
+  /** Whether the deadline has passed. */
   deadline_passed: boolean
 }
 

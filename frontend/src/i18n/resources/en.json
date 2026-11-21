@@ -488,11 +488,15 @@
       "random_delay_exclude_chi_pon": "Exclude chi and pon",
       "random_delay_exclude_chi_pon_help": "Chi and pon have a short reaction window - a late claim is simply lost - so they get no extra delay by default.",
       "requeue_enable": "Start the next game automatically",
-      "requeue_enable_help": "When on, every finished game is followed by a fixed sequence of presses: 「再來一場」→ the dialog's own 「確定」→ 「確定」 (one screen forward), until the client asks for the next match. It walks 終局積分板 → 禮物盒 → 道具獎勵; pressing 「再來一場」 on the reward panel opens a confirmation dialog, and the 「確定」 inside it starts the game. When 「再來一場」 is gone (the other three left), the module walks on to the match-preparation screen and presses 「匹配對局」 instead. It stops once the game budget is spent (a limit of 0 means no limit) or after the daily cutoff has passed — a game in play is always finished, only the next one is withheld.",
+      "requeue_enable_help": "When on, every finished game is followed by a fixed sequence of presses: 「再來一場」→ the dialog's own 「確定」→ 「確定」 (one screen forward), until the client asks for the next match. It walks 終局積分板 → 禮物盒 → 道具獎勵; pressing 「再來一場」 on the reward panel opens a confirmation dialog, and the 「確定」 inside it starts the game. When 「再來一場」 is gone (the other three left), the module walks on to the match-preparation screen and presses 「匹配對局」 instead. It stops once the game budget is spent (a limit of 0 means no limit) or once the deadline has been reached — the game in play is always played to the end, only the next one is withheld.",
       "requeue_max_games": "Game limit",
-      "requeue_max_games_hint": "Stop after this many finished games. 0 means no limit. This is a budget for the whole run — changing it does not restart the counter, so lowering it stops the loop earlier and raising it lets the loop continue. The counter only restarts when you press \"Reset the counter\".",
+      "requeue_max_games_hint": "Stop after this many finished games. 0 means no limit. This is a budget for the whole run — changing it does not restart the counter. Edit it in the overlay's bottom strip.",
       "requeue_stop_at": "Stop at",
-      "requeue_stop_at_hint": "A daily cutoff, HH:MM local time, after which no new game is started. The game in play is always finished — only the next one is withheld. Leave it empty for no cutoff. A cutoff set at one in the morning to 03:00 means \"play until three\"; the same value set at ten in the morning means \"nothing new after three\".",
+      "requeue_stop_at_hint": "After the deadline no new game is started; the game in play is always finished. It is a clock time on a day — the overlay's bottom strip adds the day offset (0 = today, 1 = tomorrow, 2 = the day after). Leave it empty for no deadline. If today's clock has already gone by, it rolls over to the next day (10:10 with 10:09 means another 24 hours).",
+      "requeue_plan_deadline": "Deadline: {{at}} ({{days}} day(s) left)",
+      "requeue_plan_deadline_passed": "Deadline: {{at}} (reached)",
+      "requeue_plan_no_deadline": "No deadline set",
+      "requeue_plan_hint": "The budget and the deadline are edited in the overlay's bottom strip — they take effect immediately.",
       "requeue_plan_status": "Played {{games}} · {{remaining}} left",
       "requeue_plan_unlimited": "Played {{games}} · no limit",
       "requeue_plan_exhausted": "Played {{games}} · the budget is spent",
@@ -1013,6 +1017,13 @@
     "plan_unlimited": "Played {{games}} · no limit",
     "plan_exhausted": "Played {{games}} · done",
     "plan_stop_after_current": "Stop after this",
-    "plan_stop_at": "Stop at"
+    "plan_stop_at": "Stop at",
+    "plan_expired": "deadline reached",
+    "plan_remaining": "left",
+    "plan_remaining_title": "Games left — editing this changes how many more are played",
+    "plan_days": "d",
+    "plan_days_title": "Days: 0 = today, 1 = tomorrow, 2 = the day after",
+    "plan_clock": "Deadline",
+    "plan_clear": "Clear the deadline"
   }
 }

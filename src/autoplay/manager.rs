@@ -1093,19 +1093,21 @@ impl AutoplayManager {
                 requeue.max_games
             ));
         }
-        let cutoff = requeue.stop_at.trim();
-        if !cutoff.is_empty() {
-            match crate::autoplay::plan::parse_deadline(cutoff) {
-                Some(deadline) => {
-                    if crate::autoplay::plan::deadline_passed_at(
-                        deadline,
-                        chrono::Local::now(),
-                    ) {
-                        reasons.push(format!("the configured cutoff {cutoff}"));
+        // The deadline is an absolute moment: it does not re-derive itself
+        // from the clock, so re-saving the plan can never push it forward
+        // (that is how a plan would end up never ending). It is checked
+        // here — between games — so the game in play is always played to
+        // the end; the bot simply does not ask for the next one.
+        let deadline = requeue.stop_at.trim();
+        if !deadline.is_empty() {
+            match crate::autoplay::plan::parse_deadline(deadline) {
+                Some(at) => {
+                    if crate::autoplay::plan::deadline_passed(at, chrono::Local::now()) {
+                        reasons.push(format!("the configured deadline {deadline}"));
                     }
                 }
                 None => warn!(
-                    "requeue: the configured cutoff {cutoff:?} is not an HH:MM time — ignoring it"
+                    "requeue: the configured deadline {deadline:?} is not a YYYY-MM-DDTHH:MM moment — ignoring it"
                 ),
             }
         }

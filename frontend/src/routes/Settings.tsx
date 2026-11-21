@@ -1142,35 +1142,7 @@ function AutoplayCard({
           </p>
           {requeue.enabled && (
             <>
-              <Field
-                label={t('settings.autoplay.requeue_max_games')}
-                hint={t('settings.autoplay.requeue_max_games_hint')}
-              >
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  value={requeue.max_games}
-                  onChange={(e) =>
-                    setRequeueField({
-                      max_games: Math.max(0, Math.trunc(Number(e.target.value) || 0)),
-                    })
-                  }
-                />
-              </Field>
               <RequeuePlanSummary />
-              <Field
-                label={t('settings.autoplay.requeue_stop_at')}
-                hint={t('settings.autoplay.requeue_stop_at_hint')}
-              >
-                <Input
-                  type="time"
-                  value={requeue.stop_at}
-                  onChange={(e) =>
-                    setRequeueField({ stop_at: e.target.value })
-                  }
-                />
-              </Field>
               <Toggle
                 label={t('settings.autoplay.requeue_queue_button')}
                 value={requeue.queue_button != null}
@@ -1597,11 +1569,10 @@ const DEFAULT_QUEUE_DIALOG_CONFIRM: [number, number] = [6.58, 6.71]
  *  live client. */
 const DEFAULT_MATCH_BUTTON: [number, number] = [10.87, 7.10]
 
-/** The live plan, as the backend sees it: how many games are done and how
- *  many are left. The field above is the *draft* — what a save would
- *  write — while this is what is running right now. The counter only
- *  restarts when the button here is pressed; changing the limit never
- *  restarts it by itself. */
+/** The live plan, as the backend sees it: the counter, the budget and the
+ *  deadline. The overlay's bottom strip owns these — it edits them while
+ *  the bot plays — so this panel shows them read-only; saving the settings
+ *  form no longer rolls them back. */
 function RequeuePlanSummary() {
   const { t } = useTranslation()
   const [plan, refresh] = useRequeueStatus(true)
@@ -1618,21 +1589,36 @@ function RequeuePlanSummary() {
             remaining: plan.remaining,
           })
 
+  const deadline = !plan.stop_at
+    ? t('settings.autoplay.requeue_plan_no_deadline')
+    : plan.deadline_passed
+      ? t('settings.autoplay.requeue_plan_deadline_passed', { at: plan.stop_at })
+      : t('settings.autoplay.requeue_plan_deadline', {
+          at: plan.stop_at,
+          days: Math.max(0, plan.stop_days ?? 0),
+        })
+
   return (
-    <div className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-1.5">
-      <span className="text-xs tabular-nums text-muted-foreground">{status}</span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => {
-          void invoke('reset_requeue_counter')
-            .then(() => refresh())
-            .catch(() => {})
-        }}
-      >
-        {t('settings.autoplay.requeue_plan_reset')}
-      </Button>
+    <div className="grid gap-1.5 rounded-md border border-border px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs tabular-nums text-muted-foreground">{status}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            void invoke('reset_requeue_counter')
+              .then(() => refresh())
+              .catch(() => {})
+          }}
+        >
+          {t('settings.autoplay.requeue_plan_reset')}
+        </Button>
+      </div>
+      <span className="text-xs text-muted-foreground">{deadline}</span>
+      <span className="text-xs text-muted-foreground">
+        {t('settings.autoplay.requeue_plan_hint')}
+      </span>
     </div>
   )
 }

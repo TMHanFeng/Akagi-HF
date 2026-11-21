@@ -89,6 +89,17 @@ pub async fn update_config(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> CmdResult<()> {
+    let mut new_config = new_config;
+    {
+        // The play plan is owned by the runtime commands: the overlay edits
+        // the budget and the deadline while the bot plays, and the Settings
+        // page has no idea that happened. A whole-config save must not roll
+        // them back to whatever the page loaded — so they are carried over
+        // from the live config untouched.
+        let current = state.config.read().await;
+        new_config.autoplay.requeue.max_games = current.autoplay.requeue.max_games;
+        new_config.autoplay.requeue.stop_at = current.autoplay.requeue.stop_at.clone();
+    }
     persist_config(&new_config, &state.config_path).map_err(|e| e.to_string())?;
 
     // Snapshot the *previous* capture-relevant fields before we overwrite,
@@ -212,7 +223,7 @@ pub async fn update_config(
 /// when the batch must stop.
 ///
 /// Read by the overlay (its footer row) and by the Settings page. The
-/// budget and the cutoff come from the config, the counter from the
+/// budget and the deadline come from the config, the counter from the
 /// shared plan — see `crate::autoplay::plan`.
 #[tauri::command]
 pub async fn get_requeue_status(state: State<'_, AppState>) -> CmdResult<RequeueStatus> {
@@ -221,13 +232,13 @@ pub async fn get_requeue_status(state: State<'_, AppState>) -> CmdResult<Requeue
         let stop_at = cfg.autoplay.requeue.stop_at.trim().to_string();
         (
             cfg.autoplay.requeue.max_games,
-            // An empty string is "no cutoff" — the frontend renders it as an
-            // empty field, not as a cutoff of midnight.
+            // An empty string is "no deadline" — the frontend renders it as
+            // an empty field, not as a deadline of midnight.
             if stop_at.is_empty() { None } else { Some(stop_at) },
         )
     };
     let plan = state.requeue_plan.lock().await;
-    Ok(plan.status(max_games, stop_at))
+    Ok(plan.status(max_games, stop_at, chrono::Local::now()))
 }
 
 /// A change to the play plan. Every field is optional and a `None` leaves
@@ -238,31 +249,43 @@ pub struct RequeuePlanPatch {
     /// The new game budget. `None` leaves the budget alone.
     #[serde(default)]
     pub max_games: Option<u32>,
-    /// The new wall-clock cutoff, `HH:MM`. `None` leaves the cutoff alone.
+    /// The deadline's clock, `HH:MM`. `None` leaves the deadline alone.
+    /// Together with `stop_days` it is resolved into an absolute moment.
     #[serde(default)]
-    pub stop_at: Option<String>,
-    /// Clear the cutoff. `stop_at` is ignored when this is set — an
-    /// omitted field and an explicit "no cutoff" are different intents,
-    /// and a single `Option` cannot carry both.
+    pub stop_clock: Option<String>,
+    /// How many days from today the deadline is: `0` = today, `1` =
+    /// tomorrow, `2` = the day after. `None` leaves the deadline alone.
+    #[serde(default)]
+    pub stop_days: Option<u32>,
+    /// Clear the deadline. The other deadline fields are ignored when this
+    /// is set — an omitted field and an explicit "no deadline" are
+    /// different intents, and a single `Option` cannot carry both.
     #[serde(default)]
     pub clear_stop_at: bool,
 }
 
-/// Change the plan while it runs: the game budget and the wall-clock
-/// cutoff. Both take effect on the next game that ends — nothing is
-/// restarted and the game in play is always finished.
+/// Change the plan while it runs: the game budget and the deadline. Both
+/// take effect on the next game that ends — nothing is restarted and the
+/// game in play is always finished.
+///
+/// The deadline is stored as an absolute moment, resolved once, here: the
+/// clock and the day offset are turned into one `YYYY-MM-DDTHH:MM` and
+/// written down. That is what keeps a plan from sliding forward every time
+/// it is read or saved — the offset is only ever a way of *entering* the
+/// deadline.
 #[tauri::command]
 pub async fn set_requeue_plan(
     patch: RequeuePlanPatch,
     state: State<'_, AppState>,
 ) -> CmdResult<()> {
-    if let Some(stop_at) = patch.stop_at.as_deref() {
-        if !patch.clear_stop_at && crate::autoplay::plan::parse_deadline(stop_at).is_none() {
-            // A cutoff that cannot be read would silently never fire, so it
-            // is refused rather than stored.
-            return Err(format!("not an HH:MM time: {stop_at}"));
+    if let Some(clock) = patch.stop_clock.as_deref() {
+        if !patch.clear_stop_at && crate::autoplay::plan::parse_clock(clock).is_none() {
+            // A deadline that cannot be read would silently never fire, so
+            // it is refused rather than stored.
+            return Err(format!("not an HH:MM time: {clock}"));
         }
     }
+    let now = chrono::Local::now();
     let cfg = {
         let mut cfg = state.config.write().await;
         if let Some(max_games) = patch.max_games {
@@ -273,8 +296,12 @@ pub async fn set_requeue_plan(
             // merging into what is on disk, and a `None` is simply not
             // written — the old value would come back on the next start.
             cfg.autoplay.requeue.stop_at = String::new();
-        } else if let Some(stop_at) = patch.stop_at {
-            cfg.autoplay.requeue.stop_at = stop_at;
+        } else if let Some(clock) = patch.stop_clock.as_deref() {
+            let stored = crate::autoplay::plan::parse_deadline(&cfg.autoplay.requeue.stop_at);
+            let days = patch.stop_days.unwrap_or(0);
+            let at = crate::autoplay::plan::resolve_deadline(clock, days, now, stored)
+                .ok_or_else(|| format!("not an HH:MM time: {clock}"))?;
+            cfg.autoplay.requeue.stop_at = crate::autoplay::plan::format_deadline(at);
         }
         cfg.clone()
     };

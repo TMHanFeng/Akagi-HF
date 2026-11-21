@@ -18,14 +18,20 @@ vi.mock('@/lib/tauri', () => ({
   HAS_TAURI: false,
 }))
 
-const status = (patch: Partial<RequeueStatus> = {}): RequeueStatus => ({
-  games: 12,
-  max_games: 20,
-  remaining: 8,
-  stop_at: null,
-  deadline_passed: false,
-  ...patch,
-})
+// The patch is spread over the base, and a spread of an optional property
+// leaves that property optional — so the result is cast back to the strict
+// shape the backend sends.
+const status = (patch: Partial<RequeueStatus> = {}): RequeueStatus =>
+  ({
+    games: 12,
+    max_games: 20,
+    remaining: 8,
+    stop_at: null,
+    stop_clock: null,
+    stop_days: null,
+    deadline_passed: false,
+    ...patch,
+  }) as RequeueStatus
 
 function mockStatus(s: RequeueStatus) {
   invoke.mockImplementation((cmd: string) => {
@@ -74,11 +80,89 @@ describe('RequeuePlanBar', () => {
     mockStatus(status())
     render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
-    const input = screen.getByLabelText('overlay.plan_stop_at') as HTMLInputElement
+    const input = screen.getByLabelText('overlay.plan_clock') as HTMLInputElement
     fireEvent.change(input, { target: { value: '23:30' } })
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_requeue_plan', {
-        patch: { stop_at: '23:30' },
+        patch: { stop_clock: '23:30', stop_days: 0 },
+      }),
+    )
+  })
+
+  it('turns the number of games left into a budget', async () => {
+    mockStatus(status())
+    render(<RequeuePlanBar />)
+    await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    const input = screen.getByLabelText('overlay.plan_remaining_title')
+    fireEvent.change(input, { target: { value: '5' } })
+    fireEvent.blur(input)
+    await waitFor(() =>
+      // 12 games are already done, so "5 more" is a budget of 17.
+      expect(invoke).toHaveBeenCalledWith('set_requeue_plan', {
+        patch: { max_games: 17 },
+      }),
+    )
+  })
+
+  it('writes the day offset together with the clock', async () => {
+    mockStatus(status())
+    render(<RequeuePlanBar />)
+    await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    const clock = screen.getByLabelText('overlay.plan_clock') as HTMLInputElement
+    fireEvent.change(clock, { target: { value: '23:30' } })
+    const days = screen.getByLabelText('overlay.plan_days_title')
+    fireEvent.change(days, { target: { value: '2' } })
+    fireEvent.blur(days)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_requeue_plan', {
+        patch: { stop_clock: '23:30', stop_days: 2 },
+      }),
+    )
+  })
+
+  it('shows the day offset that is left, and no plus on the day itself', async () => {
+    mockStatus(
+      status({
+        stop_at: '2026-11-24T23:30',
+        stop_clock: '23:30',
+        stop_days: 2,
+      }),
+    )
+    const { container } = render(<RequeuePlanBar />)
+    await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    const days = screen.getByLabelText('overlay.plan_days_title') as HTMLInputElement
+    expect(days.value).toBe('2')
+    expect(container.textContent).toContain('+')
+
+    mockStatus(
+      status({
+        stop_at: '2026-11-22T23:30',
+        stop_clock: '23:30',
+        stop_days: 0,
+      }),
+    )
+    render(<RequeuePlanBar />)
+    await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    expect(
+      (screen.getAllByLabelText('overlay.plan_days_title')[1] as HTMLInputElement)
+        .value,
+    ).toBe('0')
+  })
+
+  it('clears the deadline on a click', async () => {
+    mockStatus(
+      status({
+        stop_at: '2026-11-24T23:30',
+        stop_clock: '23:30',
+        stop_days: 2,
+      }),
+    )
+    render(<RequeuePlanBar />)
+    await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'overlay.plan_clear' }))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('set_requeue_plan', {
+        patch: { clear_stop_at: true },
       }),
     )
   })
