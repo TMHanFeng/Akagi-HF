@@ -66,3 +66,7 @@ native_bot/out/
 
 # ZCode session artifacts
 .zcode/
+
+# Local working material (docs, scripts, evidence) — never uploaded.
+# The repository carries source code only; everything else lives in Docx/.
+Docx/
