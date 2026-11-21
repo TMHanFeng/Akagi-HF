@@ -40,6 +40,14 @@ function mockStatus(s: RequeueStatus) {
   })
 }
 
+/** The knobs live in a panel that opens on demand. */
+async function openPanel() {
+  fireEvent.click(screen.getByRole('button', { name: 'overlay.plan_settings' }))
+  await waitFor(() =>
+    expect(screen.getByLabelText('overlay.plan_remaining_title')).toBeTruthy(),
+  )
+}
+
 beforeEach(() => {
   invoke.mockReset()
 })
@@ -76,23 +84,23 @@ describe('RequeuePlanBar', () => {
     )
   })
 
-  it('writes a cutoff the user picks', async () => {
+  it('keeps the knobs hidden until they are asked for', async () => {
     mockStatus(status())
     render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
-    const input = screen.getByLabelText('overlay.plan_clock') as HTMLInputElement
-    fireEvent.change(input, { target: { value: '23:30' } })
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith('set_requeue_plan', {
-        patch: { stop_clock: '23:30', stop_days: 0 },
-      }),
-    )
+    expect(screen.queryByLabelText('overlay.plan_remaining_title')).toBeNull()
+    expect(screen.queryByLabelText('overlay.plan_clock')).toBeNull()
+
+    await openPanel()
+    expect(screen.getByLabelText('overlay.plan_remaining_title')).toBeTruthy()
+    expect(screen.getByLabelText('overlay.plan_clock')).toBeTruthy()
   })
 
   it('turns the number of games left into a budget', async () => {
     mockStatus(status())
     render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    await openPanel()
     const input = screen.getByLabelText('overlay.plan_remaining_title')
     fireEvent.change(input, { target: { value: '5' } })
     fireEvent.blur(input)
@@ -108,6 +116,7 @@ describe('RequeuePlanBar', () => {
     mockStatus(status())
     render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    await openPanel()
     const clock = screen.getByLabelText('overlay.plan_clock') as HTMLInputElement
     fireEvent.change(clock, { target: { value: '23:30' } })
     const days = screen.getByLabelText('overlay.plan_days_title')
@@ -120,6 +129,20 @@ describe('RequeuePlanBar', () => {
     )
   })
 
+  it('shows the deadline as a reading in the one-line strip', async () => {
+    mockStatus(
+      status({
+        stop_at: '2026-11-24T23:30',
+        stop_clock: '23:30',
+        stop_days: 2,
+      }),
+    )
+    render(<RequeuePlanBar />)
+    await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    const text = screen.getByText(/plan_status/).textContent ?? ''
+    expect(text).toContain('23:30')
+  })
+
   it('shows the day offset that is left, and no plus on the day itself', async () => {
     mockStatus(
       status({
@@ -128,11 +151,15 @@ describe('RequeuePlanBar', () => {
         stop_days: 2,
       }),
     )
-    const { container } = render(<RequeuePlanBar />)
+    const first = render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
-    const days = screen.getByLabelText('overlay.plan_days_title') as HTMLInputElement
+    fireEvent.click(
+      first.getByRole('button', { name: 'overlay.plan_settings' }),
+    )
+    const days = first.getByLabelText('overlay.plan_days_title') as HTMLInputElement
     expect(days.value).toBe('2')
-    expect(container.textContent).toContain('+')
+    expect(first.getByText('overlay.plan_days_label').parentElement?.textContent)
+      .toContain('+')
 
     mockStatus(
       status({
@@ -141,12 +168,15 @@ describe('RequeuePlanBar', () => {
         stop_days: 0,
       }),
     )
-    render(<RequeuePlanBar />)
+    const second = render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
-    expect(
-      (screen.getAllByLabelText('overlay.plan_days_title')[1] as HTMLInputElement)
-        .value,
-    ).toBe('0')
+    fireEvent.click(
+      second.getAllByRole('button', { name: 'overlay.plan_settings' })[1],
+    )
+    const days0 = second.getAllByLabelText('overlay.plan_days_title')[1] as HTMLInputElement
+    expect(days0.value).toBe('0')
+    expect(second.getAllByText('overlay.plan_days_label')[1].parentElement?.textContent)
+      .not.toContain('+')
   })
 
   it('clears the deadline on a click', async () => {
@@ -159,6 +189,7 @@ describe('RequeuePlanBar', () => {
     )
     render(<RequeuePlanBar />)
     await waitFor(() => expect(screen.getByText(/plan_status/)).toBeTruthy())
+    await openPanel()
     fireEvent.click(screen.getByRole('button', { name: 'overlay.plan_clear' }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('set_requeue_plan', {

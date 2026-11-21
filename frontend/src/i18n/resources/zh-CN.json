@@ -1024,6 +1024,10 @@
     "plan_days": "天",
     "plan_days_title": "天数：0 = 今天，1 = 明天，2 = 后天",
     "plan_clock": "截止时刻",
-    "plan_clear": "清除截止时刻"
+    "plan_clear": "清除截止时刻",
+    "plan_settings": "打牌计划",
+    "plan_remaining_label": "剩余局数",
+    "plan_days_label": "天数",
+    "plan_clock_label": "截止时刻"
   }
 }

@@ -1024,6 +1024,10 @@
     "plan_days": "d",
     "plan_days_title": "Days: 0 = today, 1 = tomorrow, 2 = the day after",
     "plan_clock": "Deadline",
-    "plan_clear": "Clear the deadline"
+    "plan_clear": "Clear the deadline",
+    "plan_settings": "Play plan",
+    "plan_remaining_label": "Games left",
+    "plan_days_label": "Days",
+    "plan_clock_label": "Deadline"
   }
 }

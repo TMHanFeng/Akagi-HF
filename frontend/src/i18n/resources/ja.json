@@ -1024,6 +1024,10 @@
     "plan_days": "日",
     "plan_days_title": "日数：0 = 今日、1 = 明日、2 = 明後日",
     "plan_clock": "締め切り時刻",
-    "plan_clear": "締め切り時刻を消す"
+    "plan_clear": "締め切り時刻を消す",
+    "plan_settings": "打牌計画",
+    "plan_remaining_label": "残り局数",
+    "plan_days_label": "日数",
+    "plan_clock_label": "締め切り時刻"
   }
 }
